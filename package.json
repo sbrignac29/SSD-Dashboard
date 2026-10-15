@@ -6,11 +6,17 @@
   "license": "UNLICENSED",
   "main": "src/server.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "scan": "node src/cli/scan.js",
     "scan:details": "node src/cli/scan.js --details",
+    "report": "node src/cli/report.js",
+    "pin": "node src/cli/pin.js",
     "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "node-cron": "^4.6.0"
   }
 }

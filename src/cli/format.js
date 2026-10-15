@@ -1,7 +1,8 @@
 'use strict';
 
-// Turns scan results into the text report that `npm run scan` prints.
-// Only formatting lives here: no disk access and no scoring math.
+// Turns results into the text reports that `npm run scan` and `npm run report`
+// print. Only formatting lives here: no disk access, no database, and no
+// scoring math.
 
 // Finder counts in decimal units: 1 GB = 1,000,000,000 bytes. (Some tools,
 // like `du -h`, use 1,073,741,824 instead, which gives ~7% smaller numbers.)
@@ -264,6 +265,15 @@ function scoreExplanation(p, weights) {
   );
 }
 
+// Where a pin comes from: `npm run pin` (saved in the database) and/or
+// folders.keepPinned in config.json.
+function pinSources(p) {
+  const sources = [];
+  if (p.pinnedInDatabase) sources.push('npm run pin');
+  if (p.pinnedInConfig || !p.pinnedInDatabase) sources.push('folders.keepPinned in config.json');
+  return sources.join(' + ');
+}
+
 function detailsSection({ projects, scored, weights }, paint) {
   const lines = ['', paint.bold('Details')];
   projects.forEach((p, i) => {
@@ -285,23 +295,48 @@ function detailsSection({ projects, scored, weights }, paint) {
       `     From name     ${nameParts}`,
     );
     if (scored) lines.push(`     Score         ${scoreExplanation(p, weights)}`);
-    if (p.pinnedKeep) lines.push('     Pinned        yes — always Keep (folders.keepPinned)');
+    if (p.pinnedKeep) lines.push(`     Pinned        yes — always Keep (${pinSources(p)})`);
     if (p.skippedLinks > 0) lines.push(`     Not followed  ${plural(p.skippedLinks, 'shortcut')} (symlinks)`);
     if (p.incomplete) lines.push("     Incomplete    some folders or files couldn't be read — see Warnings");
   });
   return lines;
 }
 
-// Builds the whole report as one string.
+// What `npm run scan` did with the database, at the end of its report.
+//   saved – the result of saving ({ added, updated, returned, markedMissing }),
+//           or null when nothing was saved (a --root scan)
+function databaseSection({ saved, dbPath }, paint) {
+  if (!saved) {
+    return [
+      '',
+      paint.bold('Database'),
+      '  Not saved: --root scans cover only part of the SSD, so they are never saved.',
+      '  Run `npm run scan` without --root to save results.',
+    ];
+  }
+  const parts = [`${formatCount(saved.added)} new`, `${formatCount(saved.updated)} updated`];
+  if (saved.returned > 0) parts.push(`${formatCount(saved.returned)} back on the SSD`);
+  parts.push(`${formatCount(saved.markedMissing)} no longer found (marked missing, kept for history)`);
+  return [
+    '',
+    paint.bold(`Saved to ${dbPath}`),
+    `  ${parts.join(' · ')}`,
+    paint.dim('  `npm run report` shows these results again without rescanning.'),
+  ];
+}
+
+// Builds the whole `npm run scan` report as one string.
 //   scan         – result of scanDrive()
 //   projects     – scan.projects in display order (with `scoring` added once scored)
 //   scored       – whether projects have scores to show
 //   weights      – config.weights, for the score explanation
 //   details      – include the per-project details section
+//   saved/dbPath – what was saved to the database (see databaseSection);
+//                  leave `saved` undefined to leave the section out
 //   color/width  – terminal settings
-function renderReport({ scan, projects, scored = false, weights, configSource, elapsedMs, details, color, width }) {
+function renderReport({ scan, projects, scored = false, weights, configSource, elapsedMs, details, saved, dbPath, color, width }) {
   const paint = makePainter(color);
-  const context = { scan, projects, scored, weights, configSource, elapsedMs, width };
+  const context = { scan, projects, scored, weights, configSource, elapsedMs, width, saved, dbPath };
   const lines = [
     ...headerSection(context, paint),
     ...projectTableSection(context, paint),
@@ -313,7 +348,9 @@ function renderReport({ scan, projects, scored = false, weights, configSource, e
   ];
   if (details) {
     lines.push(...detailsSection(context, paint));
-  } else {
+  }
+  if (saved !== undefined) lines.push(...databaseSection(context, paint));
+  if (!details) {
     lines.push(
       '',
       paint.dim('Tip: `npm run scan:details` adds each project\'s size by type, its newest file, and the score math.'),
@@ -322,4 +359,94 @@ function renderReport({ scan, projects, scored = false, weights, configSource, e
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { renderReport, renderTable, formatGB, formatDate, shortenText, shortenPath };
+// --- The saved report (`npm run report`) ------------------------------------
+
+function formatAgo(ms, now) {
+  const days = Math.floor((now - ms) / (24 * 60 * 60 * 1000));
+  if (days < 1) return 'today';
+  return days === 1 ? '1 day ago' : `${formatCount(days)} days ago`;
+}
+
+function savedHeaderSection({ lastScan, lastAttempt, shared, dbPath, now }, paint) {
+  const lines = [
+    paint.bold('SSD Offload Dashboard — saved results (no rescan)'),
+    `  Drive      ${lastScan.root}`,
+    `  Last scan  ${formatDate(lastScan.startedMs, { withTime: true })} (${formatAgo(lastScan.startedMs, now)}) · ` +
+      `${plural(lastScan.projectCount, 'project')} + ${plural(shared.length, 'shared folder')} · ` +
+      `${plural(lastScan.fileCount, 'file')} · ${formatGB(lastScan.totalBytes)} GB · ` +
+      `took ${((lastScan.finishedMs - lastScan.startedMs) / 1000).toFixed(1)} s`,
+    `  Database   ${dbPath}`,
+  ];
+  if (lastAttempt && lastAttempt.id !== lastScan.id && lastAttempt.status === 'failed') {
+    lines.push(
+      paint.red(
+        `  ⚠ A later scan, ${formatDate(lastAttempt.startedMs, { withTime: true })}, failed: ` +
+          `${String(lastAttempt.errors[0] ?? 'unknown error').split('\n')[0]}`,
+      ),
+      paint.red('    The results below are from the last scan that finished.'),
+    );
+  }
+  return lines;
+}
+
+function yourPinsSection({ projects }, paint) {
+  const pinned = projects.filter((p) => p.pinnedInDatabase);
+  if (pinned.length === 0) return [];
+  return [
+    '',
+    paint.bold('Your pins (npm run pin) — always Keep'),
+    ...pinned.map((p) => `  • ${p.name}`),
+  ];
+}
+
+function missingSection({ missing, width }, paint) {
+  if (missing.length === 0) return [];
+  const rows = [...missing]
+    .sort((a, b) => b.lastScannedMs - a.lastScannedMs || a.name.localeCompare(b.name))
+    .map((p) => [p.name, formatGB(p.sizeBytes), formatDate(p.lastScannedMs), p.scoring ? p.scoring.bucket : '—']);
+  return [
+    '',
+    paint.bold('No longer found on the SSD — kept in the database for history, not ranked'),
+    paint.dim('  (offloaded, renamed, deleted, or now skipped by your config)'),
+    ...renderTable(
+      [
+        { header: 'Project', align: 'left', flex: true, shorten: shortenPath },
+        { header: 'Size (GB)', align: 'right' },
+        { header: 'Last seen', align: 'left' },
+        { header: 'Last bucket', align: 'left' },
+      ],
+      rows,
+      { width },
+    ),
+  ];
+}
+
+// Builds the `npm run report` output from what the database holds.
+//   lastScan    – the latest finished scan (db.latestScan(db, 'finished'))
+//   lastAttempt – the latest scan of any status, to warn if it failed
+//   projects    – ranked projects still on the SSD, in display order (with `scoring`)
+//   shared      – shared folders still on the SSD
+//   missing     – rows no longer found on the SSD
+//   now         – the current time, for "3 days ago"
+function renderSavedReport({ lastScan, lastAttempt, projects, shared, missing, dbPath, now = Date.now(), color, width }) {
+  const paint = makePainter(color);
+  const context = { lastScan, lastAttempt, projects, shared, missing, dbPath, now, scored: true, width };
+  // The scan's warnings were saved as plain messages, already prefixed with
+  // the folder name, so no per-folder warnings are passed here.
+  const savedScan = { warnings: lastScan.errors, projects: [], shared: [] };
+  const lines = [
+    ...savedHeaderSection(context, paint),
+    ...projectTableSection(context, paint),
+    ...bucketSummarySection(context, paint),
+    ...yourPinsSection(context, paint),
+    ...sharedSection({ scan: { shared }, width }, paint),
+    ...missingSection(context, paint),
+    ...warningsSection({ scan: savedScan }, paint),
+    '',
+    paint.dim('Scores are from the last scan; changes to config.json apply at the next scan.'),
+    paint.dim('Refresh: `npm run scan` · Pin or unpin: `npm run pin -- "Project name"`'),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+module.exports = { renderReport, renderSavedReport, renderTable, formatGB, formatDate, shortenText, shortenPath };

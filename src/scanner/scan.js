@@ -93,6 +93,14 @@ function matchesSelfOrAncestor(segments, keys) {
   return segments.some((_, i) => keys.has(folderKey(segments.slice(0, i + 1).join('/'))));
 }
 
+// True if config.json pins this project (folders.keepPinned), using the same
+// rules as a scan: any upper/lower case, and a pinned container covers every
+// project inside it. The database uses this when it re-scores without a scan.
+//   relPath – the project's path from the top of the SSD, e.g. "NCHS Football/Week 1"
+function isPinnedByConfig(relPath, keepPinned) {
+  return matchesSelfOrAncestor(String(relPath).split('/'), keySet(keepPinned));
+}
+
 // Looks at the top level of the drive (and inside container folders) and
 // sorts every item into: a project to scan, a shared folder to scan, a loose
 // file, or something to skip.
@@ -369,8 +377,8 @@ async function locateInsideSsd(root, ssdPath) {
 }
 
 
-// Scans the SSD and returns plain data (no classes), so it can be printed now
-// and saved to the database in Phase 2.
+// Scans the SSD and returns plain data (no classes), so it can be printed and
+// saved to the database (src/db.js).
 //   root       – folder to scan; defaults to config.ssdPath. Can be a folder
 //                inside the SSD (npm run scan -- --root ...) or anywhere else.
 //   now        – the time to measure "future-dated" against (tests pass a fixed time)
@@ -430,4 +438,4 @@ async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onPr
   };
 }
 
-module.exports = { scanDrive, folderKey, ScanError };
+module.exports = { scanDrive, folderKey, isPinnedByConfig, ScanError };

@@ -177,6 +177,14 @@ function assertSafeLocations(config) {
         '(for example ~/Code/SSD-Dashboard) and run it from there.',
     );
   }
+  // canonicalPath follows shortcuts, so this catches a data/ folder that is
+  // really a shortcut (symlink) to a folder on the SSD.
+  if (isInside(canonicalPath(DATA_DIR), ssd)) {
+    throw new ConfigError(
+      `The app's data/ folder leads onto the drive it scans (${config.ssdPath}).\n` +
+        'The database must never be written to the SSD. Make data/ a normal folder inside the app folder.',
+    );
+  }
   if (config.archivePath.trim() !== '') {
     const archive = canonicalPath(config.archivePath);
     if (isInside(archive, ssd) || isInside(ssd, archive)) {
