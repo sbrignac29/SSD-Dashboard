@@ -69,10 +69,62 @@ test('final exports: a video export named "Final" or "FD" (drafts are not final)
   assert.equal(isFinal('Promo FINALv2.mov', []), true);
   assert.equal(isFinal('Sunburned Final Cut.mov', []), true);
   assert.equal(isFinal('Soccer 8-24 v3.mp4', ['Exports']), false); // a draft in revision
-  assert.equal(isFinal('Final Thumbnail.png', ['Exports']), false); // not a video
+  assert.equal(isFinal('Highlights Final Draft.mp4', ['Exports']), false); // says it's a draft
   assert.equal(isFinal('Soccer FD_Proxy.mov', []), false); // a proxy, not an export
   assert.equal(isFinal('Soccer FD.mp4', ['Render Cache']), false); // cache
   assert.equal(isFinal('game.mov', ['Footage'], ['Soccer Finals Temp']), false); // the project name never counts
+});
+
+test('a "Final" or "FD" that is only part of the project or event name does not count', () => {
+  const { isFinal, classify } = createClassifier(withDefaults().fileTypes);
+  const regional = ['NCHS Basketball Regional Final'];
+  assert.equal(isFinal('Regional Final Highlights v1.mp4', ['Exports'], regional), false);
+  assert.equal(isFinal('Regional Final Highlights FD.mp4', ['Exports'], regional), true);
+  // Full-game footage named after the game is raw, not an export
+  assert.equal(classify('Sectional Final Full Game.mp4', ['Footage'], ['Soccer Sectional Final']), 'raw');
+  const fireDept = ['Naperville FD Recruitment'];
+  assert.equal(isFinal('Naperville FD Recruitment v2.mp4', ['Exports'], fireDept), false);
+  assert.equal(isFinal('Naperville FD Recruitment FINAL.mp4', ['Exports'], fireDept), true);
+});
+
+test('Semi-Final, Quarter-Final, Pre-Final and Not Final are not finals', () => {
+  const { isFinal } = createClassifier(withDefaults().fileTypes);
+  assert.equal(isFinal('Semi-Final Highlights v2.mp4', ['Exports']), false);
+  assert.equal(isFinal('Quarter Final Recap.mp4', ['Exports']), false);
+  assert.equal(isFinal('Promo NOT FINAL.mp4', ['Exports']), false);
+  assert.equal(isFinal('Semi-Final Highlights FD.mp4', ['Exports']), true);
+});
+
+test('timestamps and random IDs in phone/app file names are not versions', () => {
+  const { isFinal, classify } = createClassifier(withDefaults().fileTypes);
+  assert.equal(classify('RPReplay_Final1726851234.MP4', ['Reference']), 'raw');
+  assert.equal(isFinal('RPReplay_Final1726851234.MP4', ['Reference']), false);
+  assert.equal(classify('0B9C5E3A-FD12-4C8E-9A51-3D2F6E7B8C90.mov', []), 'raw');
+  assert.equal(isFinal('Highlights FD2.mp4', ['Exports']), true); // a short version number is fine
+});
+
+test('folders of finals: "Final Exports", "FINAL FINAL RENDERS", "Exports/FD" — but not a plain "Final" folder', () => {
+  const { isFinal } = createClassifier(withDefaults().fileTypes);
+  assert.equal(isFinal('Soccer 8-24 Highlights.mp4', ['FINAL EXPORTS'], ['Soccer 8-24']), true);
+  assert.equal(isFinal('Hangover.mov', ['FINAL FINAL RENDERS']), true);
+  assert.equal(isFinal('Highlights.mp4', ['Exports', 'FD']), true);
+  assert.equal(isFinal('Highlights Draft.mp4', ['Final Exports']), false); // named as a draft
+  assert.equal(isFinal('Highlights.mp4', ['Exports']), false);
+  assert.equal(isFinal('clip.mov', ['Regional Final', 'Footage'], ['NCHS Basketball']), false);
+});
+
+test('photo exports can be final too (the scanner only uses them for photo-only projects)', () => {
+  const { finalKind } = createClassifier(withDefaults().fileTypes);
+  assert.equal(finalKind('Senior Portraits FINAL 001.jpg', ['Exports']), 'photo');
+  assert.equal(finalKind('Soccer FD.mp4', ['Exports']), 'video');
+  assert.equal(finalKind('State Final 001.jpg', ['Photos']), null); // raw photo, not an export
+});
+
+test('a word added only to finalExportWords still works (it also counts as an export word)', () => {
+  const fileTypes = { ...withDefaults().fileTypes, finalExportWords: ['final', 'fd', 'approved'] };
+  const { classify, isFinal } = createClassifier(fileTypes);
+  assert.equal(classify('Promo APPROVED.mp4', []), 'export');
+  assert.equal(isFinal('Promo APPROVED.mp4', []), true);
 });
 
 test('a version or number on the end still counts: FINALv2, Final2, Exports2025', () => {

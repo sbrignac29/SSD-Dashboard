@@ -61,10 +61,16 @@ How this is enforced today:
   project, other), newest modified date, last save of a project file (.drp/.prproj/...),
   whether it has exports (any file classified `export`: inside an export-word folder
   *within* the project, or a video whose name has an export word — the project's own name
-  never counts, e.g. "Soccer Finals Temp"), and whether it has a **final export**: a video
-  export whose name has a `fileTypes.finalExportWords` word ("Final" or "FD", version
-  suffixes like FINALv2 allowed). Plain exports may be drafts in revision and don't mean
-  finished. It records which file set each flag. It uses **modification time (mtime), never access time**.
+  never counts, e.g. "Soccer Finals Temp"), and whether it has a **final export**
+  (`src/scanner/classify.js` → `finalExportKind`): an export whose name has a
+  `fileTypes.finalExportWords` word ("Final"/"FD"; version suffixes up to 4 digits, e.g.
+  FINALv2) or that sits in a final-exports folder ("Final Exports", "Exports/FD"). Words that
+  also appear in the project's own path don't count (a "Regional Final" project's
+  "Regional Final Highlights v1" is a draft), nor do Semi/Quarter/Pre/Not-Final,
+  `notFinalWords` (draft/rough/wip), or UUID file names. Video finals count; photo finals only
+  for projects with no video exports. Plain exports may be drafts in revision and don't mean
+  finished. It records the newest final export file, and `newerFootageFile` when raw footage
+  is more than a day newer than it (another shoot still to edit). It uses **modification time (mtime), never access time**.
   Hidden/housekeeping files (`.DS_Store`, `._*`, `Thumbs.db`) count toward size but
   never toward "last edited" — Finder rewrites them just from browsing.
 - Scoring: `Score = 0.45*Done + 0.35*Age + 0.20*Size`, each part 0–100 (owner's formula).
@@ -74,9 +80,12 @@ How this is enforced today:
   - Score is rounded to 1 decimal before bucketing so the shown number and bucket agree.
 - Buckets follow the workflow rule for Move 1 ("move recent projects that are done"), agreed
   with the owner — the formula alone would make finished projects wait ~100 days:
-  - Ready: finished (Done > 0) AND untouched for `ageDays.recent` (14) days AND nothing
-    uncertain (no dated files, future-dated files — the scanner ignores dates > 1 day ahead —
-    or unreadable folders, `incomplete`). Otherwise a finished project is Review, with a note.
+  - Ready: finished (Done > 0) AND untouched for `ageDays.recent` (14) days AND no footage
+    newer than the final export AND nothing uncertain (no dated files, future-dated files —
+    the scanner ignores dates > 1 day ahead — or unreadable folders, `incomplete`). Otherwise a
+    finished project is Review, with a note. The report lists the final-export file behind
+    every Ready project, with a reminder that Resolve-library / shared 'Project files' edits
+    are invisible to the scan.
   - Unfinished: never Ready; Review if score ≥ `buckets.review` (40), else Keep.
   - Pinned as Keep (`folders.keepPinned`, a container pin covers all its subfolders) → Keep.
   - Report order: Ready biggest first (frees most space), then Review, Keep by score, size.
