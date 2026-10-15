@@ -54,6 +54,7 @@ describe('scanner on a fake drive', () => {
     file('Soccer 8-24/Footage/A001.mov', 5000, 60);
     file('Soccer 8-24/Footage/A002.mov', 3000, 58);
     file('Soccer 8-24/Exports/Soccer v1.mp4', 1000, 50);
+    file('Soccer 8-24/Exports/Soccer FD.mp4', 1000, 50);
     file('Soccer 8-24/Soccer.prproj', 200, 49);
     file('Soccer 8-24/.DS_Store', 10, 0); // touched "today" by Finder
     file('Soccer 8-24/Footage/._A001.mov', 4, 0);
@@ -84,7 +85,7 @@ describe('scanner on a fake drive', () => {
 
   function testConfig() {
     return withDefaults({
-      ssdPath: root,
+      drives: { working: root, library: '', archive: '' },
       folders: {
         ignore: ['$RECYCLE.BIN', 'Folder That Does Not Exist'],
         shared: ['Resolve Project Library'],
@@ -112,9 +113,9 @@ describe('scanner on a fake drive', () => {
 
   it('sizes add up, split by type', async () => {
     const soccer = byName((await runScan()).projects, 'Soccer 8-24');
-    assert.equal(soccer.sizeBytes, 5000 + 3000 + 1000 + 200 + 10 + 4 + 7);
-    assert.equal(soccer.fileCount, 7);
-    assert.deepEqual(soccer.bytesByType, { raw: 8000, proxy: 0, export: 1000, cache: 0, project: 200, other: 21 });
+    assert.equal(soccer.sizeBytes, 5000 + 3000 + 1000 + 1000 + 200 + 10 + 4 + 7);
+    assert.equal(soccer.fileCount, 8);
+    assert.deepEqual(soccer.bytesByType, { raw: 8000, proxy: 0, export: 2000, cache: 0, project: 200, other: 21 });
     assert.equal(soccer.hasExport, true);
   });
 
@@ -149,6 +150,8 @@ describe('scanner on a fake drive', () => {
     assert.equal(week1.bytesByType.proxy, 400);
     assert.equal(week1.hasExport, false);
     assert.equal(week2.hasExport, true);
+    // "Renders/highlights.mov" is an export, but not named Final/FD: a draft
+    assert.equal(week2.hasFinalExport, false);
     assert.ok(!scan.projects.some((p) => p.name === 'NCHS Football'));
     assert.ok(scan.looseFiles.some((f) => f.relPath === 'NCHS Football/season-logo.png'));
   });
@@ -195,13 +198,21 @@ describe('scanner on a fake drive', () => {
   });
 
   it('a missing drive gives a friendly error', async () => {
-    const config = withDefaults({ ssdPath: path.join(root, 'not-plugged-in') });
-    await assert.rejects(scanDrive(config, { now: NOW }), /Is the SSD plugged in\?/);
+    const config = withDefaults({ drives: { working: path.join(root, 'not-plugged-in'), library: '', archive: '' } });
+    await assert.rejects(scanDrive(config, { now: NOW }), /Is the drive plugged in\?/);
   });
 
   it('names the file that made "Export: yes", so you can find it in Finder', async () => {
     const soccer = byName((await runScan()).projects, 'Soccer 8-24');
-    assert.equal(soccer.exportExampleFile, 'Exports/Soccer v1.mp4');
+    assert.equal(soccer.exportExampleFile, 'Exports/Soccer FD.mp4');
+  });
+
+  it('a video export named "FD" or "Final" marks the project finished, and says which file', async () => {
+    const soccer = byName((await runScan()).projects, 'Soccer 8-24');
+    assert.equal(soccer.hasFinalExport, true);
+    assert.equal(soccer.finalExportFile, 'Exports/Soccer FD.mp4');
+    const finals = byName((await runScan()).projects, 'Soccer Finals Temp');
+    assert.equal(finals.hasFinalExport, false);
   });
 
   it('pinning a container pins every project inside it', async () => {
@@ -216,7 +227,9 @@ describe('scanner on a fake drive', () => {
 
   it('--root on a folder inside the SSD keeps full names, pins, and no false warnings', async () => {
     const scan = await runScan({ root: path.join(root, 'NCHS Football') });
-    assert.equal(scan.scope, 'inside-ssd');
+    assert.equal(scan.scope, 'partial');
+    assert.equal(scan.drive, 'working');
+    assert.equal(scan.wholeDrive, false);
     const week1 = byName(scan.projects, 'NCHS Football / Week 1');
     assert.equal(week1.relPath, 'NCHS Football/Week 1');
     assert.equal(week1.pinnedKeep, true);
@@ -249,7 +262,28 @@ describe('scanner on a fake drive', () => {
   });
 
   it('a whole-SSD scan reports its scope', async () => {
-    assert.equal((await runScan()).scope, 'ssd');
+    const scan = await runScan();
+    assert.equal(scan.scope, 'working');
+    assert.equal(scan.drive, 'working');
+    assert.equal(scan.driveLabel, 'Working SSD');
+    assert.equal(scan.wholeDrive, true);
+  });
+
+  it('a scan of the Library drive knows it is the Library, with no false "name not found" warnings', async () => {
+    const library = fs.mkdtempSync(path.join(DATA_DIR, '.test-fake-library-'));
+    try {
+      file('Old Shoot/Exports/Old Shoot FD.mp4', 100, 400, library);
+      const config = testConfig();
+      config.drives.library = library;
+      const scan = await scanDrive(config, { root: library, now: NOW });
+      assert.equal(scan.drive, 'library');
+      assert.equal(scan.wholeDrive, true);
+      assert.equal(scan.scope, 'partial');
+      assert.deepEqual(scan.warnings, []);
+      assert.equal(byName(scan.projects, 'Old Shoot').hasFinalExport, true);
+    } finally {
+      removeTestFolder(library);
+    }
   });
 });
 
@@ -270,7 +304,10 @@ describe('scanner when the drive disappears mid-scan', () => {
   async function expectUnplugError(unplugAt) {
     const ssd = path.join(base, 'ssd');
     const unplugged = path.join(base, 'unplugged');
-    const config = withDefaults({ ssdPath: ssd, folders: { ignore: [], shared: [], containers: [], keepPinned: [] } });
+    const config = withDefaults({
+      drives: { working: ssd, library: '', archive: '' },
+      folders: { ignore: [], shared: [], containers: [], keepPinned: [] },
+    });
     let calls = 0;
     const onProgress = () => {
       calls += 1;

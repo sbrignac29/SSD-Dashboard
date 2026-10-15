@@ -14,18 +14,21 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
-const { loadConfig, assertSafeLocations, ConfigError } = require('../config');
+const { loadConfig, assertSafeLocations, assertAppNotInside, ConfigError } = require('../config');
 const { scanDrive, ScanError } = require('../scanner/scan');
-const { scoreProjects, byScoreThenSize } = require('../scoring/score');
+const { allDriveSpace } = require('../scanner/space');
+const { scoreProjects, byOffloadOrder } = require('../scoring/score');
+const { planMoves } = require('../scoring/plan');
 const { renderReport } = require('./report');
 
 const HELP = `Usage: npm run scan [-- options]
 
-Scans your SSD (read-only — nothing on it is ever changed) and prints its projects.
+Scans your working SSD (read-only — nothing on any drive is ever changed), ranks its
+projects for moving to the Library HDD, and shows how full each drive is.
 
 Options:
   -d, --details       Also show size by type, newest file, and score math for each project
-      --root <path>   Scan this folder instead of "ssdPath" from config
+      --root <path>   Scan this folder instead of your working SSD ("drives.working" in config)
   -h, --help          Show this help`;
 
 function readOptions(argv) {
@@ -96,10 +99,10 @@ async function main(argv) {
   }
 
   const { config, source } = loadConfig();
-  const root = options.root ? resolveUserPath(options.root) : config.ssdPath;
+  const root = options.root ? resolveUserPath(options.root) : config.drives.working;
   if (options.root) await assertRootExists(root);
   assertSafeLocations(config);
-  assertSafeLocations({ ...config, ssdPath: root });
+  assertAppNotInside(root, 'the folder being scanned');
 
   console.error(`Scanning ${root} (read-only)…`);
   const startedAt = Date.now();
@@ -113,7 +116,12 @@ async function main(argv) {
 
   // Phase 1 has no Notion connection yet, so every project's status is
   // unknown and "Done" comes from exports alone.
-  const projects = scoreProjects(scan.projects, config, startedAt).sort(byScoreThenSize);
+  const projects = scoreProjects(scan.projects, config, startedAt).sort(byOffloadOrder);
+
+  // How full each drive is. The move plan only makes sense for a scan of the
+  // whole working SSD (a partial scan would undercount the Ready projects).
+  const spaces = await allDriveSpace(config);
+  const plan = scan.scope === 'working' ? planMoves({ projects, spaces, libraryFull: config.libraryFull }) : null;
 
   process.stdout.write(
     renderReport({
@@ -127,6 +135,9 @@ async function main(argv) {
       color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR,
       // In a terminal, fit the window. Saved to a file, never cut names short.
       width: process.stdout.isTTY ? process.stdout.columns || 100 : Infinity,
+      spaces,
+      plan,
+      libraryFull: config.libraryFull,
     }),
   );
 }

@@ -86,6 +86,7 @@ function createClassifier(fileTypes) {
     proxyFileWords: phrases(fileTypes.proxyFileWords),
     exportFolders: phrases(fileTypes.exportFolderWords),
     exportFileWords: phrases(fileTypes.exportFileWords),
+    finalExportWords: phrases(fileTypes.finalExportWords),
   };
 
   // A "context" remembers what we've learned from the folders above a file,
@@ -143,16 +144,37 @@ function createClassifier(fileTypes) {
     return 'other';
   }
 
-  // Convenience for tests and one-off use: classify a file given the folders
+  // A FINAL export is how we know a project is finished. Plain exports can be
+  // drafts still in revision, so it takes a video export whose name says
+  // "Final" or "FD" (from fileTypes.finalExportWords):
+  //   "Soccer 8-24 FD.mp4", "Promo FINALv2.mov"  → final
+  //   "Soccer 8-24 v3.mp4" in Exports/            → export, but not final
+  function isFinalExport(fileName, context) {
+    const ext = path.extname(fileName).toLowerCase();
+    if (!rules.videoExtensions.has(ext)) return false;
+    if (classifyFile(fileName, context) !== 'export') return false;
+    return hasPhrase(toWords(path.basename(fileName, ext)), rules.finalExportWords);
+  }
+
+  // Walks from the project folder down to a file's folder, building up the
+  // context (used by the convenience helpers below).
+  function contextFor(foldersInsideProject, projectPath) {
+    let context = rootContext(projectPath);
+    for (const folder of foldersInsideProject) context = childContext(context, folder);
+    return context;
+  }
+
+  // Conveniences for tests and one-off use: classify a file given the folders
   // inside the project that lead to it, e.g.
   //   classify('A001.mov', ['Footage', 'Day 1'], ['Soccer 8-24'])
   function classify(fileName, foldersInsideProject = [], projectPath = []) {
-    let context = rootContext(projectPath);
-    for (const folder of foldersInsideProject) context = childContext(context, folder);
-    return classifyFile(fileName, context);
+    return classifyFile(fileName, contextFor(foldersInsideProject, projectPath));
+  }
+  function isFinal(fileName, foldersInsideProject = [], projectPath = []) {
+    return isFinalExport(fileName, contextFor(foldersInsideProject, projectPath));
   }
 
-  return { rootContext, childContext, classifyFile, classify };
+  return { rootContext, childContext, classifyFile, isFinalExport, classify, isFinal };
 }
 
 module.exports = { CATEGORIES, createClassifier, isHousekeepingName, toWords };

@@ -62,6 +62,19 @@ test('video files named like finished exports are exports', () => {
   assert.equal(classify('Season_Master.mp4', []), 'export');
 });
 
+test('final exports: a video export named "Final" or "FD" (drafts are not final)', () => {
+  const { isFinal } = createClassifier(withDefaults().fileTypes);
+  assert.equal(isFinal('Soccer 8-24 FD.mp4', ['Exports']), true);
+  assert.equal(isFinal('SoccerFD.mp4', []), true); // "SoccerFD" splits into "Soccer FD"
+  assert.equal(isFinal('Promo FINALv2.mov', []), true);
+  assert.equal(isFinal('Sunburned Final Cut.mov', []), true);
+  assert.equal(isFinal('Soccer 8-24 v3.mp4', ['Exports']), false); // a draft in revision
+  assert.equal(isFinal('Final Thumbnail.png', ['Exports']), false); // not a video
+  assert.equal(isFinal('Soccer FD_Proxy.mov', []), false); // a proxy, not an export
+  assert.equal(isFinal('Soccer FD.mp4', ['Render Cache']), false); // cache
+  assert.equal(isFinal('game.mov', ['Footage'], ['Soccer Finals Temp']), false); // the project name never counts
+});
+
 test('a version or number on the end still counts: FINALv2, Final2, Exports2025', () => {
   assert.equal(classify('Senior Night FINALv2.mp4', []), 'export');
   assert.equal(classify('Promo Final2.mp4', []), 'export');
