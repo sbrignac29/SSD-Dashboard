@@ -11,6 +11,6 @@
   "scripts": {
     "scan": "node src/cli/scan.js",
     "scan:details": "node src/cli/scan.js --details",
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.js"
   }
 }
