@@ -2,7 +2,7 @@
 'use strict';
 
 // The `npm run report` command: prints the results saved by the last
-// `npm run scan` (or nightly scan), straight from the database. It doesn't
+// `npm run scan` (or Scan now), straight from the database. It doesn't
 // scan anything, so it's instant and works even when the SSD isn't plugged in.
 // The only thing it asks the drives is how full they are (read-only), for the
 // move plan; unplugged drives show as "not connected".

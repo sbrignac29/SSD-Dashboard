@@ -76,8 +76,6 @@ function overallPercent(steps) {
 //   log           – where unexpected errors go
 function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, log = console }) {
   let state = { running: false, trigger: null, startedAt: null, finishedAt: null, outcome: null, error: null, steps: [] };
-  // The last full result per drive (used by the nightly job's log message).
-  const results = new Map();
 
   function message() {
     if (state.error) return state.error;
@@ -139,7 +137,6 @@ function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, log = 
           }
         },
       });
-      results.set(step.drive, result);
       step.state = 'saved';
       step.summary = {
         projects: result.scan.projects.length,
@@ -216,7 +213,6 @@ function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, log = 
   return {
     start,
     status,
-    lastResult: (drive) => results.get(drive),
   };
 }
 
