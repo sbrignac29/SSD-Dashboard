@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// The `npm run scan` command: loads settings, scans the SSD (read-only), and
-// prints a table of projects.
+// The `npm run scan` command: loads settings, scans the SSD (read-only),
+// scores each project, and prints them best offload candidates first.
 //
 //   npm run scan                         scan the SSD from config
 //   npm run scan:details                 same, with per-project details
@@ -15,6 +15,7 @@ const path = require('node:path');
 const { parseArgs } = require('node:util');
 const { loadConfig, assertSafeLocations, ConfigError } = require('../config');
 const { scanDrive, ScanError } = require('../scanner/scan');
+const { scoreProjects, byScoreThenSize } = require('../scoring/score');
 const { renderReport } = require('./report');
 
 const HELP = `Usage: npm run scan [-- options]
@@ -93,12 +94,16 @@ async function main(argv) {
     progressLine.clear();
   }
 
-  const projects = [...scan.projects].sort((a, b) => b.sizeBytes - a.sizeBytes);
+  // Phase 1 has no Notion connection yet, so every project's status is
+  // unknown and "Done" comes from exports alone.
+  const projects = scoreProjects(scan.projects, config, startedAt).sort(byScoreThenSize);
 
   process.stdout.write(
     renderReport({
       scan,
       projects,
+      scored: true,
+      weights: config.weights,
       configSource: source,
       elapsedMs: Date.now() - startedAt,
       details: options.details,
