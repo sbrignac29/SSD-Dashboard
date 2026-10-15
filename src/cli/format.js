@@ -488,12 +488,12 @@ function formatAgo(ms, now) {
   return days === 1 ? '1 day ago' : `${formatCount(days)} days ago`;
 }
 
-function savedHeaderSection({ lastScan, lastAttempt, shared, dbPath, now }, paint) {
+function savedHeaderSection({ lastScan, lastAttempt, projects, shared, dbPath, now }, paint) {
   const lines = [
     paint.bold('SSD Offload Dashboard — saved results (no rescan)'),
     `  Scanned    Working SSD — ${lastScan.root}`,
     `  Last scan  ${formatDate(lastScan.startedMs, { withTime: true })} (${formatAgo(lastScan.startedMs, now)}) · ` +
-      `${plural(lastScan.projectCount, 'project')} + ${plural(shared.length, 'shared folder')} · ` +
+      `${plural(projects.length, 'project')} + ${plural(shared.length, 'shared folder')} · ` +
       `${plural(lastScan.fileCount, 'file')} · ${formatGB(lastScan.totalBytes)} GB · ` +
       `took ${((lastScan.finishedMs - lastScan.startedMs) / 1000).toFixed(1)} s`,
     `  Database   ${dbPath}`,

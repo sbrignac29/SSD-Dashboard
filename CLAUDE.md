@@ -121,8 +121,9 @@ How this is enforced today:
   in `scans` and changes no projects.
 - One save = one IMMEDIATE transaction: upsert every project/shared folder by `path`, mark
   rows this scan didn't see `missing = 1` (except rows at or under `scan.unreadable`: folders
-  the scanner couldn't open or lstat, which are left as they were), re-score, insert the
-  `scans` row. Upserts keep
+  the scanner couldn't open or lstat; those stay non-missing but get `incomplete = 1`, so their
+  old facts can't make them Ready until a scan reads them again), re-score, insert the `scans`
+  row. Upserts keep
   `pinned_keep`, `first_seen`, and an already-filled `client`; a returning project gets
   `missing = 0` with its old `id`.
 - Scores are always computed from the saved rows (`rescoreProjects`), with `now` = the last
@@ -138,8 +139,10 @@ How this is enforced today:
   `config.json`, so `togglePin` won't "unpin" a config pin; it re-scores (so a newly added config
   pin shows) and returns `pinned-in-config`, and the command explains. Pin lookup matches the
   report name or path via `folderKey` (case-insensitive), preferring a row still on the SSD over
-  a missing one with the same key (case-only renames), and suggests substrings on a miss. A
-  missing project's pin can be toggled, but it isn't re-scored (`scoring: null` in the result).
+  a missing one with the same key (case-only renames); a toggle clears `pinned_keep` on those
+  same-key rows, so the pin moves to the present row and none is left unreachable. It suggests
+  substrings on a miss. A missing project's pin can be toggled, but it isn't re-scored
+  (`scoring: null` in the result, also for `pinned-in-config`).
 - `npm run report` prints stored scores; config edits take effect at the next scan or pin.
   Its Drives/move-plan section reads drive space live (statfs) with the saved Ready projects.
 - Write transactions use `.immediate()` so a busy database waits (5 s) instead of failing at
@@ -182,8 +185,9 @@ Schema (version 2 — migration 1 made the tables, migration 2 added `newer_foot
 
 ## Stack and conventions
 
-- Node.js ≥ 22.14: better-sqlite3 13 needs Node-API 10, and on older Node it segfaults instead
-  of throwing, so `db.js` checks `process.versions.napi` first (`nodeApiProblem`). CommonJS
+- Node.js `^22.14.0 || >=23.6.0` (package.json engines): better-sqlite3 13 needs Node-API 10, and
+  on older Node it segfaults instead of throwing, so `db.js` checks `process.versions.napi`
+  first (`nodeApiProblem`). CommonJS
   modules (`require` / `module.exports`), `'use strict'`.
 - Dependencies only when a phase needs them. Now: better-sqlite3 13 (ships Node-API prebuilt
   binaries, incl. darwin-arm64/x64, so no compiler and no rebuild after a Node upgrade) and

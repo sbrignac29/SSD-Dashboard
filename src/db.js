@@ -134,7 +134,8 @@ const REINSTALL_ADVICE = 'Delete the node_modules folder in the app folder, then
 function nodeApiProblem(napiVersion = process.versions.napi) {
   if (Number(napiVersion) >= REQUIRED_NODE_API) return null;
   return (
-    `Your Node.js (${process.version}) is too old for the database library: it needs Node 22.14 or newer.\n` +
+    `Your Node.js (${process.version}) is too old for the database library: it needs Node 22.14 or newer ` +
+    '(on Node 23, 23.6 or newer).\n' +
     'Install the current LTS version from https://nodejs.org, then run `npm install` in the app folder.'
   );
 }
@@ -436,16 +437,22 @@ function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
 
     // Anything this scan didn't see is marked missing. Never deleted.
     // Except: rows inside a folder the scan couldn't open (e.g. a container
-    // macOS wouldn't let it read) are probably still there, so they're left
-    // as they were rather than reported as gone.
+    // macOS wouldn't let it read) are probably still there, so they aren't
+    // reported as gone. Their facts are from an older scan, though, so they're
+    // flagged incomplete: that keeps them out of Ready until a scan can read
+    // them again (the next successful scan resets the flag).
     const unreadable = (scan.unreadable || []).map(folderKey);
     const insideUnreadable = (rowPath) => {
       const key = folderKey(rowPath);
       return unreadable.some((folder) => key === folder || key.startsWith(`${folder}/`));
     };
     const markMissing = db.prepare('UPDATE projects SET missing = 1 WHERE id = ?');
+    const markIncomplete = db.prepare('UPDATE projects SET incomplete = 1 WHERE id = ?');
     for (const row of db.prepare('SELECT id, path FROM projects WHERE missing = 0 AND last_scanned <> ?').all(scannedAtIso)) {
-      if (insideUnreadable(row.path)) continue;
+      if (insideUnreadable(row.path)) {
+        markIncomplete.run(row.id);
+        continue;
+      }
       markMissing.run(row.id);
       counts.markedMissing += 1;
     }
@@ -560,7 +567,8 @@ function findProject(db, typedName) {
   const all = listProjects(db);
   const matches = wanted === '' ? [] : all.filter((p) => folderKey(p.relPath) === wanted);
   const project = matches.find((p) => !p.missing) ?? matches[0];
-  if (project) return { project };
+  // `sameName`: the other rows with the same name (an old spelling, now missing).
+  if (project) return { project, sameName: matches.filter((p) => p !== project) };
   const suggestions = wanted === '' ? [] : all.filter((p) => folderKey(p.relPath).includes(wanted)).map((p) => p.name);
   return { suggestions: suggestions.slice(0, 10) };
 }
@@ -575,7 +583,7 @@ function findProject(db, typedName) {
 //   { result: 'shared', project }           – shared folders aren't ranked
 //   { result: 'not-found', suggestions }
 function togglePin(db, config, typedName) {
-  const { project, suggestions } = findProject(db, typedName);
+  const { project, sameName, suggestions } = findProject(db, typedName);
   if (!project) return { result: 'not-found', suggestions };
   if (project.kind === 'shared') return { result: 'shared', project };
 
@@ -584,13 +592,18 @@ function togglePin(db, config, typedName) {
     // Nothing to toggle, but if config.json changed since the last scan, the
     // saved bucket doesn't show this pin yet. Re-score so it does.
     const scored = db.transaction(() => rescoreProjects(db, config)).immediate();
-    return { result: 'pinned-in-config', project: scored.find((p) => p.id === project.id) ?? project };
+    // A missing project isn't re-scored, so it has no current bucket to show.
+    return { result: 'pinned-in-config', project: scored.find((p) => p.id === project.id) ?? { ...project, scoring: null } };
   }
 
   const pinned = !project.pinnedInDatabase;
   const scored = db
     .transaction(() => {
       db.prepare('UPDATE projects SET pinned_keep = ? WHERE id = ?').run(pinned ? 1 : 0, project.id);
+      // Same project under an old spelling (e.g. before a case-only rename):
+      // its pin moves to this row, so no pin is left behind that can't be reached.
+      const clearOld = db.prepare('UPDATE projects SET pinned_keep = 0 WHERE id = ?');
+      for (const old of sameName) clearOld.run(old.id);
       return rescoreProjects(db, config);
     })
     .immediate(); // claim the write first (see saveScan)

@@ -196,23 +196,40 @@ describe('saving scans', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM projects WHERE missing = 1').get().n, 0);
   });
 
-  it("a container the scan couldn't open keeps its shoots (they aren't marked missing)", async () => {
-    await save(NOW);
-    // Pretend macOS refused to let the scan open "NCHS Football" this time.
-    const realReaddir = fsp.readdir;
-    fsp.readdir = async (dir, ...rest) => {
-      if (path.basename(dir) === 'NCHS Football') throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
-      return realReaddir(dir, ...rest);
-    };
-    let result;
+  it("a container the scan couldn't open keeps its shoots, and they can't turn Ready on old facts", async () => {
+    // A finished shoot, edited 10 days before the first scan: Review ("Ready in 4 days").
+    file('NCHS Football/Week 2/Exports/Highlights FD.mp4', 400, 10);
     try {
-      result = await save(NOW + HOUR);
+      await save(NOW);
+      assert.equal(row('NCHS Football/Week 2').bucket, 'Review');
+
+      // Five days later macOS refuses to let the scan open "NCHS Football".
+      const realReaddir = fsp.readdir;
+      fsp.readdir = async (dir, ...rest) => {
+        if (path.basename(dir) === 'NCHS Football') throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        return realReaddir(dir, ...rest);
+      };
+      let result;
+      try {
+        result = await save(NOW + 5 * DAY);
+      } finally {
+        fsp.readdir = realReaddir;
+      }
+      assert.ok(result.scan.warnings.some((w) => w.includes("Couldn't open container folder")));
+      assert.equal(result.markedMissing, 0);
+      const week2 = row('NCHS Football/Week 2');
+      assert.equal(week2.missing, 0, 'not reported as gone');
+      assert.equal(week2.incomplete, 1, 'flagged: its facts are from an older scan');
+      assert.notEqual(week2.bucket, 'Ready', '15 days old by now, but nobody could check it');
+      assert.match(week2.score_notes, /couldn't be read/);
+
+      // The next scan that can read it clears the flag.
+      await save(NOW + 6 * DAY);
+      assert.equal(row('NCHS Football/Week 2').incomplete, 0);
+      assert.equal(row('NCHS Football/Week 2').bucket, 'Ready');
     } finally {
-      fsp.readdir = realReaddir;
+      fs.rmSync(path.join(ssd, 'NCHS Football/Week 2'), { recursive: true, force: true });
     }
-    assert.ok(result.scan.warnings.some((w) => w.includes("Couldn't open container folder")));
-    assert.equal(result.markedMissing, 0);
-    assert.equal(row('NCHS Football/Week 1').missing, 0);
   });
 
   it('a --root scan (one folder, or another drive) is never saved', async () => {
@@ -371,6 +388,11 @@ describe('pins', () => {
       assert.equal(outcome.result, 'pinned');
       assert.equal(outcome.project.relPath, 'fresh edit');
       assert.equal(row('fresh edit').pinned_keep, 1);
+      // The pin moved to the new spelling; none is left on the old row, where
+      // `npm run pin` could never reach it.
+      assert.equal(row('Fresh Edit').pinned_keep, 0);
+      assert.equal(togglePin(db, config, 'Fresh Edit').result, 'unpinned');
+      assert.equal(listProjects(db).filter((p) => p.pinnedInDatabase).length, 0);
     } finally {
       fs.renameSync(path.join(ssd, 'fresh edit'), path.join(ssd, 'Fresh Edit'));
     }
@@ -385,6 +407,21 @@ describe('pins', () => {
       await save(NOW + HOUR);
       const outcome = togglePin(db, config, 'Gone Soon');
       assert.equal(outcome.result, 'pinned');
+      assert.equal(outcome.project.missing, true);
+      assert.equal(outcome.project.scoring, null);
+    } finally {
+      fs.renameSync(away, path.join(ssd, 'Gone Soon'));
+    }
+  });
+
+  it("a missing project pinned in config.json gets no stale bucket from npm run pin", async () => {
+    await save(NOW);
+    const away = path.join(base, 'moved-away-config');
+    fs.renameSync(path.join(ssd, 'Gone Soon'), away);
+    try {
+      await save(NOW + HOUR);
+      const outcome = togglePin(db, testConfig({ keepPinned: ['Gone Soon'] }), 'Gone Soon');
+      assert.equal(outcome.result, 'pinned-in-config');
       assert.equal(outcome.project.missing, true);
       assert.equal(outcome.project.scoring, null);
     } finally {

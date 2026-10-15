@@ -43,10 +43,11 @@ Archive list for Move 2, and Notion status.
   node -v
   ```
   If it prints `v22.14.0` or higher (`v22.14` … `v22.x`, `v24.x`, …), you're
-  set. If it says "command not found" or a lower number (like `v22.11.0` or
-  `v20.x`), install the **LTS** version from <https://nodejs.org>, then run
-  `npm install` again. Phase 2's database library needs Node 22.14 or newer
-  (older versions crash it, so the app checks first and tells you).
+  set. (Node 23 needs `v23.6.0` or higher.) If it says "command not found" or a
+  lower number (like `v22.11.0` or `v20.x`), install the **LTS** version from
+  <https://nodejs.org>, then run `npm install` again. Phase 2's database library
+  needs these versions (older ones crash it, so the app checks first and tells
+  you).
 
 ## 2. Get the code
 
@@ -563,7 +564,7 @@ touch your real `data/dashboard.db`.
   in the app folder and run `npm install`.
 - **"Your Node.js … is too old for the database library"** (or "Segmentation
   fault") — install the current LTS from <https://nodejs.org> (22.14 or
-  newer), then run `npm install` again.
+  newer; on Node 23, 23.6 or newer), then run `npm install` again.
 - **"The database is busy"** — another program is changing
   `data/dashboard.db`, usually DB Browser with unsaved edits. Click **Write
   Changes** or **Revert Changes** (or close it) and try again. Open it with
@@ -573,7 +574,7 @@ touch your real `data/dashboard.db`.
 - **"No project called … in the database"** (pin) — use the name the report
   shows, in quotes. Names come from the last scan, so rescan after renaming.
 - **Odd syntax errors, or npm warnings about "engine"** — check `node -v` is
-  22.14 or newer.
+  22.14 or newer (on Node 23, 23.6 or newer).
 
 ## Known limitations
 
