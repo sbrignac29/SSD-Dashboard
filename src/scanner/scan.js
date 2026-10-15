@@ -33,6 +33,7 @@ class ScanError extends Error {}
 function folderKey(relPath) {
   return String(relPath)
     .normalize('NFC')
+    .replace(/[‘’]/g, "'") // a curly apostrophe (TextEdit, iPhone) matches a straight one
     .split('/')
     .map((part) => part.trim())
     .filter(Boolean)
@@ -85,6 +86,13 @@ function friendlyRootError(error, root) {
 
 // --- Step 1: decide what each top-level item is ------------------------------
 
+// True if this path, or any folder above it, is in the list. So pinning a
+// container like "NCHS Football" keeps every shoot inside it, and a --root
+// scan of a folder INSIDE a shared folder still treats everything as shared.
+function matchesSelfOrAncestor(segments, keys) {
+  return segments.some((_, i) => keys.has(folderKey(segments.slice(0, i + 1).join('/'))));
+}
+
 // Looks at the top level of the drive (and inside container folders) and
 // sorts every item into: a project to scan, a shared folder to scan, a loose
 // file, or something to skip.
@@ -126,7 +134,7 @@ async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
     plan.warnings.push(`Couldn't look at "${relPath}" (${entry.error.code || entry.error.message}).`);
     return;
   }
-  if (lists.ignore.has(key)) {
+  if (matchesSelfOrAncestor(segments, lists.ignore)) {
     plan.skipped.push({ relPath, reason: 'listed in folders.ignore' });
     return;
   }
@@ -172,7 +180,7 @@ async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
     segments,
     relPath,
     absPath,
-    kind: lists.shared.has(key) ? 'shared' : 'project',
+    kind: matchesSelfOrAncestor(segments, lists.shared) ? 'shared' : 'project',
   });
 }
 
@@ -360,11 +368,6 @@ async function locateInsideSsd(root, ssdPath) {
   return relative.split(path.sep);
 }
 
-// True if this path, or any folder above it, is pinned. Pinning a container
-// like "NCHS Football" keeps every shoot inside it.
-function isPinned(segments, pinnedKeys) {
-  return segments.some((_, i) => pinnedKeys.has(folderKey(segments.slice(0, i + 1).join('/'))));
-}
 
 // Scans the SSD and returns plain data (no classes), so it can be printed now
 // and saved to the database in Phase 2.
@@ -401,9 +404,12 @@ async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onPr
 
   for (const target of plan.targets) {
     const facts = await scanFolder(target, { classifier, now, onProgress, progress, root });
-    facts.pinnedKeep = isPinned(target.segments, lists.keepPinned);
+    facts.pinnedKeep = matchesSelfOrAncestor(target.segments, lists.keepPinned);
     (target.kind === 'shared' ? shared : projects).push(facts);
   }
+  // One last check: if the drive vanished while the final folders were being
+  // read, their files would just look missing.
+  await assertDriveStillThere(root);
 
   // "This name matches nothing" warnings only make sense when we've seen the
   // whole SSD; a --root scan only sees part of it.

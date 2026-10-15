@@ -74,6 +74,7 @@ describe('scanner on a fake drive', () => {
     file('$RECYCLE.BIN/junk.mov', 10, 5);
     file('.Spotlight-V100/store', 10, 0);
     file('SUNBURNED.mp4', 700, 300);
+    file("Veteran's Day Video/Footage/a.mov", 100, 200);
     fs.mkdirSync(path.join(root, 'untitled folder'));
     fs.symlinkSync(path.join(root, 'Soccer 8-24'), path.join(root, 'Shortcut'));
     fs.symlinkSync(path.join(root, 'Soccer Finals Temp'), path.join(root, 'Soccer 8-24', 'link'));
@@ -223,6 +224,30 @@ describe('scanner on a fake drive', () => {
     assert.ok(scan.looseFiles.some((f) => f.relPath === 'NCHS Football/season-logo.png'));
   });
 
+  it('--root inside a shared folder lists everything as shared, never as projects', async () => {
+    const scan = await runScan({ root: path.join(root, 'Resolve Project Library') });
+    assert.deepEqual(scan.projects, []);
+    assert.deepEqual(
+      scan.shared.map((s) => s.name),
+      ['Resolve Project Library / Projects'],
+    );
+  });
+
+  it('--root inside an ignored folder skips everything in it', async () => {
+    const scan = await runScan({ root: path.join(root, '$RECYCLE.BIN') });
+    assert.deepEqual(scan.projects, []);
+    assert.deepEqual(scan.looseFiles, []);
+    assert.ok(scan.skipped.some((s) => s.relPath === '$RECYCLE.BIN/junk.mov'));
+  });
+
+  it('a curly apostrophe in config (from TextEdit or an iPhone) still matches the folder', async () => {
+    const config = testConfig();
+    config.folders.keepPinned = ['Veteran’s Day Video'];
+    const scan = await scanDrive(config, { now: NOW });
+    assert.equal(byName(scan.projects, "Veteran's Day Video").pinnedKeep, true);
+    assert.equal(scan.warnings.filter((w) => w.includes('keepPinned')).length, 0);
+  });
+
   it('a whole-SSD scan reports its scope', async () => {
     assert.equal((await runScan()).scope, 'ssd');
   });
@@ -240,15 +265,16 @@ describe('scanner when the drive disappears mid-scan', () => {
   });
   after(() => removeTestFolder(base));
 
-  it('stops with a clear error instead of reporting 0 GB projects', async () => {
+  // "Unplugs" the drive (by renaming it away) right after folder number
+  // `unplugAt` has been read, and expects the scan to stop with a clear error.
+  async function expectUnplugError(unplugAt) {
     const ssd = path.join(base, 'ssd');
     const unplugged = path.join(base, 'unplugged');
     const config = withDefaults({ ssdPath: ssd, folders: { ignore: [], shared: [], containers: [], keepPinned: [] } });
     let calls = 0;
-    // "Unplug" the drive (by renaming it away) right after the first folder is read.
     const onProgress = () => {
       calls += 1;
-      if (calls === 1) fs.renameSync(ssd, unplugged);
+      if (calls === unplugAt) fs.renameSync(ssd, unplugged);
     };
     try {
       await assert.rejects(
@@ -258,5 +284,14 @@ describe('scanner when the drive disappears mid-scan', () => {
     } finally {
       if (fs.existsSync(unplugged)) fs.renameSync(unplugged, ssd);
     }
+  }
+
+  it('stops with a clear error instead of reporting 0 GB projects', async () => {
+    await expectUnplugError(1);
+  });
+
+  it('also notices when the drive goes away after the very last folder', async () => {
+    // A, A/Footage, A/Exports, B, B/Footage, B/Exports = 6 folders
+    await expectUnplugError(6);
   });
 });

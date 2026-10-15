@@ -20,6 +20,8 @@ test('shortenPath keeps the last part, so container subprojects stay distinguish
   assert.equal(shortenPath('Next Elite Soccer Training / 2026-08-24 Drills', 26), 'Next … / 2026-08-24 Drills');
   assert.equal(shortenPath('NCHS Football/Season Intro.mov', 24, '/'), 'NCHS F…/Season Intro.mov');
   assert.equal(shortenPath('Covenant Classical Update Content', 12), 'Covenant Cl…');
+  // When even the subfolder name is too long, keep as much of IT as fits
+  assert.equal(shortenPath('Next Elite Soccer Training / 2026-06-14 Passing Drills', 26), '… / 2026-06-14 Passing Dr…'); // 1 + 3 + 22 = 26
 });
 
 test('renderTable never shortens when width is Infinity (report saved to a file)', () => {

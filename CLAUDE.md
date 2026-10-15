@@ -37,7 +37,9 @@ How this is enforced today:
     Hidden items (names starting with `.`) are always skipped at the top level.
   - Loose files at the top level (or directly inside a container) are listed, not ranked.
   - Paths are always relative to the SSD top, so `--root` scans of a subfolder still match
-    config lists. "Name not found" config warnings only run on whole-SSD scans.
+    config lists (shared/ignore/pins also apply to anything *inside* a listed folder).
+    "Name not found" config warnings only run on whole-SSD scans, and the Size part is relative
+    to the largest project in the current scan — the report warns that --root scores can run high.
 - The scanner records per project: total size, size by type (raw, proxy, export, cache,
   project, other), newest modified date, last save of a project file (.drp/.prproj/...),
   and whether it has exports (any file classified `export`: inside an export-word folder

@@ -45,7 +45,11 @@ function shortenPath(text, width, separator = ' / ') {
   if (cut === -1) return shortenText(text, width);
   const tail = text.slice(cut + separator.length);
   const room = width - tail.length - separator.length;
-  if (room < 4) return shortenText(text, width);
+  if (room < 4) {
+    // Even the last part alone is too long: keep as much of it as fits.
+    const tailRoom = width - separator.length - 1;
+    return tailRoom >= 4 ? `…${separator}${shortenText(tail, tailRoom)}` : shortenText(text, width);
+  }
   return `${shortenText(text.slice(0, cut), room)}${separator}${tail}`;
 }
 
@@ -115,13 +119,23 @@ function headerSection({ scan, configSource, elapsedMs }, paint) {
 }
 
 function scopeNote(scope) {
+  const sizeCaveat = [
+    '            Size scores only compare projects within THIS scan, so scores can be higher than in a full',
+    '            `npm run scan`. Use a full scan before deciding what to offload.',
+  ];
   if (scope === 'inside-ssd') {
-    return ['  Note      This scan covers one folder (--root). Config folder lists still match by their path on the SSD;',
-            '            "name not found" warnings are off because the rest of the SSD wasn\'t looked at.'];
+    return [
+      '  Note      This scan covers one folder (--root). Config folder lists still match by their path on the SSD;',
+      '            "name not found" warnings are off because the rest of the SSD wasn\'t looked at.',
+      ...sizeCaveat,
+    ];
   }
   if (scope === 'elsewhere') {
-    return ['  Note      This folder isn\'t on your SSD ("ssdPath" in config), so config folder lists are matched',
-            '            from this folder down, and "name not found" warnings are off.'];
+    return [
+      '  Note      This folder isn\'t on your SSD ("ssdPath" in config), so config folder lists are matched',
+      '            from this folder down, and "name not found" warnings are off.',
+      ...sizeCaveat,
+    ];
   }
   return [];
 }

@@ -67,7 +67,7 @@ Other ways to run it:
 |---|---|
 | `npm run scan` | Scan and print the ranked table |
 | `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, and the score math |
-| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder (its subfolders are treated as projects). Handy for trying a small folder first. Your config lists still apply |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder (its subfolders are treated as projects). Handy for trying a small folder first. Your config lists still apply, but Size is compared only within that folder, so scores can run higher than in a full scan — decide what to offload from a full `npm run scan` |
 | `npm run scan -- --help` | List the options |
 
 (The `--` tells npm "everything after this goes to the scan command, not to npm".)
@@ -112,7 +112,7 @@ Score = 0.45 × Done + 0.35 × Age + 0.20 × Size        (each part 0–100)
 - **Done:** 100 if Notion says Complete/Delivered (from a later phase), 70 if the
   project has an export, otherwise 0.
 - **Age:** 0 if edited in the last 14 days, then rising evenly to 100 at 120 days.
-- **Size:** the project's size as a percentage of the biggest project.
+- **Size:** the project's size as a percentage of the biggest project in the scan.
 
 Example: has an export (70), last edited 67 days ago (halfway from 14 to 120 →
 50), half the size of the biggest project (50):

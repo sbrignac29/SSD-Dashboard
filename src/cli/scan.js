@@ -10,6 +10,7 @@
 //
 // (With npm, options for the script go after `--`.)
 
+const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
@@ -66,6 +67,20 @@ function createProgressLine(stream) {
   };
 }
 
+// A mistyped --root shouldn't trigger the "is the SSD plugged in?" message,
+// which would point at the wrong setting.
+async function assertRootExists(root) {
+  try {
+    await fsp.stat(root);
+  } catch {
+    throw new ScanError(
+      `Can't find the folder "${root}" given with --root.\n` +
+        'Check the spelling and use the full path, e.g. --root "/Volumes/BRIGSMEDIA/NCHS Football" ' +
+        '(a relative path is measured from the folder you ran the command in).',
+    );
+  }
+}
+
 async function main(argv) {
   let options;
   try {
@@ -82,6 +97,7 @@ async function main(argv) {
 
   const { config, source } = loadConfig();
   const root = options.root ? resolveUserPath(options.root) : config.ssdPath;
+  if (options.root) await assertRootExists(root);
   assertSafeLocations(config);
   assertSafeLocations({ ...config, ssdPath: root });
 
