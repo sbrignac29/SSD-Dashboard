@@ -28,8 +28,7 @@
 //
 // SAFETY (see CLAUDE.md): the server only READS the drives (scans, and statfs
 // for free space) and only WRITES to data/ (the database: scans and pins).
-// Starting it never scans anything; only the Scan now button does (or the
-// nightly scan, if you turn it on in config.json: server.nightlyScan).
+// Starting it never scans anything; only the Scan now button does.
 
 const fs = require('node:fs');
 const http = require('node:http');
@@ -38,7 +37,6 @@ const { ROOT_DIR, loadConfig, assertSafeLocations, ConfigError } = require('./co
 const { openDatabase, describeDatabaseError, togglePinById, displayPath } = require('./db');
 const { allDriveSpace } = require('./scanner/space');
 const { ScanError } = require('./scanner/scan');
-const { scheduleNightlyScan } = require('./jobs/nightly');
 const views = require('./web/views');
 const { createScanRunner } = require('./web/scanRunner');
 
@@ -188,23 +186,6 @@ function createApp({ db, runner, getConfig = () => loadConfig().config, getSpace
 
 // --- Starting and stopping ---------------------------------------------------
 
-// The nightly job's work, done through the runner so it shows on the page as
-// it happens and can't overlap with a Scan now press.
-function nightlyScanThrough(runner) {
-  return async () => {
-    const outcome = await runner.start({ trigger: 'nightly' });
-    if (!outcome.started) {
-      throw new Error(
-        outcome.reason === 'already-running' ? 'a scan was already running' : 'the Working SSD and Library HDD are both unplugged',
-      );
-    }
-    const final = await outcome.done;
-    const working = final.steps.find((s) => s.drive === 'working');
-    if (working?.state !== 'saved') throw new Error(`Working SSD ${working ? working.message : 'is not set up'}`);
-    return runner.lastResult('working');
-  };
-}
-
 function main() {
   // Without these the page would load blank, so check before starting.
   if (!express || [...VENDOR_FILES.values()].some((file) => !fs.existsSync(file))) throw new ConfigError(NPM_INSTALL_ADVICE);
@@ -215,7 +196,7 @@ function main() {
   // This is not a scan: nothing on any drive is read yet.
   const db = openDatabase();
   const runner = createScanRunner({ db, getConfig: () => loadConfig().config });
-  const { port, host, nightlyScan } = config.server;
+  const { port, host } = config.server;
   const app = createApp({ db, runner, localOnly: isLoopback(host) });
   const server = http.createServer(app);
 
@@ -232,10 +213,7 @@ function main() {
     process.exitCode = 1;
   });
 
-  let nightlyTask = null;
   server.listen(port, host, () => {
-    // Built in Phase 2; started only if you turned it on.
-    if (nightlyScan) nightlyTask = scheduleNightlyScan({ run: nightlyScanThrough(runner) });
     const url = `http://localhost:${port}`;
     console.log('SSD Offload Dashboard is running.');
     console.log(`  Open ${url} in your browser.`);
@@ -243,16 +221,11 @@ function main() {
       console.log(`  On your phone (same Wi-Fi): http://<this Mac's name>.local:${port}`);
     }
     console.log('  Nothing is scanned until you press "Scan now".');
-    console.log(
-      nightlyScan
-        ? '  Nightly scan: on, at 2:00 AM while this Terminal window keeps running (server.nightlyScan in config.json).'
-        : '  Nightly scan: off (turn on with "nightlyScan": true under "server" in config.json).',
-    );
     console.log(`  Settings: ${source} · Database: ${displayPath()}`);
     console.log('  Press Ctrl+C to stop.');
   });
 
-  // Ctrl+C sends SIGINT. Stop the schedule, stop answering, close the
+  // Ctrl+C sends SIGINT. Stop answering, close the
   // database, and exit. (A scan in progress just stops: it only reads, and
   // its results are saved in one transaction, so nothing is half-saved.)
   let stopping = false;
@@ -260,7 +233,6 @@ function main() {
     if (stopping) return;
     stopping = true;
     console.log('\nStopping the dashboard…');
-    nightlyTask?.stop();
     server.close();
     server.closeAllConnections();
     db.close();
@@ -282,4 +254,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createApp, isLoopback, nightlyScanThrough };
+module.exports = { createApp, isLoopback };

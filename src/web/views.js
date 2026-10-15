@@ -286,7 +286,6 @@ function summaryView({ db, config, spaces }) {
       limitPercent: config.libraryFull.startAtPercent,
     },
     shared: { count: shared.length, bytes: sum(shared, (p) => p.sizeBytes), names: shared.map((p) => p.name) },
-    nightlyScan: config.server.nightlyScan,
   };
 }
 

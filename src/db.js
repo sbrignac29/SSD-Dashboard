@@ -608,7 +608,7 @@ function saveScan(db, scan, config, { finishedAt = Date.now(), space = null } = 
   });
 
   // .immediate() claims the right to write at the start. If another program
-  // is writing (the nightly scan, or DB Browser with unsaved edits), SQLite
+  // is writing (the Scan now button, or DB Browser with unsaved edits), SQLite
   // then waits up to 5 seconds for it, instead of failing straight away.
   return { ...save.immediate(), ...counts };
 }
