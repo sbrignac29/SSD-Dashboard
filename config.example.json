@@ -1,6 +1,13 @@
 {
-  "ssdPath": "/Volumes/BRIGSMEDIA",
-  "archivePath": "",
+  "drives": {
+    "working": "/Volumes/BRIGSMEDIA",
+    "library": "/Volumes/BRIGSMEDIA LIBRARY",
+    "archive": "/Volumes/Expansion/BRIGSMEDIA ARCHIVE"
+  },
+  "libraryFull": {
+    "startAtPercent": 90,
+    "targetPercent": 70
+  },
 
   "ageDays": {
     "recent": 14,
@@ -12,7 +19,6 @@
     "size": 0.20
   },
   "buckets": {
-    "ready": 70,
     "review": 40
   },
   "doneStatuses": ["Complete", "Delivered"],
@@ -49,6 +55,7 @@
     "proxyFolderWords": ["proxy", "proxies", "optimized media"],
     "proxyFileWords": ["proxy", "lrv"],
     "exportFolderWords": ["export", "exports", "exported", "deliverable", "deliverables", "render", "renders", "output", "outputs"],
-    "exportFileWords": ["final", "export", "exported", "master", "deliverable"]
+    "exportFileWords": ["final", "fd", "export", "exported", "master", "deliverable"],
+    "finalExportWords": ["final", "fd"]
   }
 }

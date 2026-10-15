@@ -13,6 +13,14 @@ function formatGB(bytes, decimals = 2) {
   return (bytes / BYTES_PER_GB).toFixed(decimals);
 }
 
+function formatTB(bytes) {
+  return (bytes / (BYTES_PER_GB * 1000)).toFixed(2);
+}
+
+function formatPercent(percent) {
+  return `${Math.round(percent)}%`;
+}
+
 function formatCount(n) {
   return n.toLocaleString('en-US');
 }
@@ -109,36 +117,37 @@ function headerSection({ scan, configSource, elapsedMs }, paint) {
   const looseBytes = sum(scan.looseFiles, (f) => f.sizeBytes);
   return [
     paint.bold('SSD Offload Dashboard — scan report'),
-    `  Drive     ${scan.root}`,
+    `  Scanned   ${scan.driveLabel ? `${scan.driveLabel}${scan.wholeDrive ? '' : ' (one folder)'} — ` : ''}${scan.root}`,
     `  Settings  ${configSource}`,
-    `  Scanned   ${plural(scan.projects.length, 'project')} + ${plural(scan.shared.length, 'shared folder')} · ` +
+    `  Found     ${plural(scan.projects.length, 'project')} + ${plural(scan.shared.length, 'shared folder')} · ` +
       `${plural(scan.filesScanned + scan.looseFiles.length, 'file')} · ${formatGB(projectBytes + sharedBytes + looseBytes)} GB · ` +
       `${(elapsedMs / 1000).toFixed(1)} s`,
     `  Finished  ${formatDate(scan.scannedAt + elapsedMs, { withTime: true })}`,
-    ...scopeNote(scan.scope).map((line) => paint.dim(line)),
+    ...scopeNote(scan).map((line) => paint.dim(line)),
   ];
 }
 
-function scopeNote(scope) {
-  const sizeCaveat = [
-    '            Size scores only compare projects within THIS scan, so scores can be higher than in a full',
-    '            `npm run scan`. Use a full scan before deciding what to offload.',
+// Explains how a scan of anything other than the whole working SSD differs.
+function scopeNote(scan) {
+  if (scan.scope === 'working') return [];
+  const where = scan.driveLabel
+    ? `This scan covers ${scan.wholeDrive ? 'your' : 'one folder on your'} ${scan.driveLabel}, not the whole working SSD.`
+    : "This folder isn't on any of the drives in config, so it's treated as its own drive.";
+  const lines = [
+    `  Note      ${where}`,
+    '            Config folder lists match by path from the top of the drive; "name not found" warnings are off.',
+    '            Size scores only compare projects within THIS scan, so scores can run higher than in a full scan.',
   ];
-  if (scope === 'inside-ssd') {
-    return [
-      '  Note      This scan covers one folder (--root). Config folder lists still match by their path on the SSD;',
-      '            "name not found" warnings are off because the rest of the SSD wasn\'t looked at.',
-      ...sizeCaveat,
-    ];
+  if (scan.drive !== 'working') {
+    lines.push('            Ready/Review/Keep describe Move 1 (SSD → Library). The Library → Archive view comes in Phase 3.');
   }
-  if (scope === 'elsewhere') {
-    return [
-      '  Note      This folder isn\'t on your SSD ("ssdPath" in config), so config folder lists are matched',
-      '            from this folder down, and "name not found" warnings are off.',
-      ...sizeCaveat,
-    ];
-  }
-  return [];
+  return lines;
+}
+
+// "final" (finished), "draft" (exports, none named Final/FD), or "no".
+function exportLabel(p) {
+  if (p.hasFinalExport) return 'final';
+  return p.hasExport ? 'draft' : 'no';
 }
 
 function projectTableSection({ projects, scored, width }, paint) {
@@ -160,7 +169,7 @@ function projectTableSection({ projects, scored, width }, paint) {
   }
 
   const rows = projects.map((p, i) => {
-    const row = [String(i + 1), p.name, formatGB(p.sizeBytes), formatDate(p.lastEditedMs), p.hasExport ? 'yes' : 'no'];
+    const row = [String(i + 1), p.name, formatGB(p.sizeBytes), formatDate(p.lastEditedMs), exportLabel(p)];
     if (scored) row.push(p.scoring.score.toFixed(1), p.scoring.bucket);
     return row;
   });
@@ -170,9 +179,9 @@ function projectTableSection({ projects, scored, width }, paint) {
 function bucketSummarySection({ projects }, paint) {
   const lines = ['', paint.bold('Buckets')];
   const descriptions = {
-    Ready: 'old and/or finished — good offload candidates',
-    Review: 'worth a look',
-    Keep: 'recent, unfinished, small, or pinned',
+    Ready: 'finished and untouched for 14+ days — move to the Library',
+    Review: 'finished but edited recently, or unfinished but old/big',
+    Keep: 'unfinished, or pinned',
   };
   for (const bucket of ['Ready', 'Review', 'Keep']) {
     const inBucket = projects.filter((p) => p.scoring.bucket === bucket);
@@ -184,7 +193,7 @@ function bucketSummarySection({ projects }, paint) {
   }
   const noted = projects.filter((p) => p.scoring.notes.length > 0);
   if (noted.length > 0) {
-    lines.push('', paint.bold('Safety overrides'));
+    lines.push('', paint.bold('Notes'));
     for (const p of noted) lines.push(`  • ${p.name}: ${p.scoring.notes.join(' ')}`);
   }
   return lines;
@@ -252,7 +261,8 @@ function warningsSection({ scan }, paint) {
 
 function scoreExplanation(p, weights) {
   const { parts, bucket, score, daysSinceEdit } = p.scoring;
-  const doneWhy = parts.done === 100 ? 'Notion says done' : parts.done === 70 ? 'has an export' : 'no export found';
+  const doneWhy =
+    parts.done === 100 ? 'Notion says done' : parts.done === 70 ? 'final export' : p.hasExport ? 'draft export only' : 'no export';
   const ageWhy = daysSinceEdit === null ? 'no dated files' : `${daysSinceEdit.toFixed(1)} days since last edit`;
   // The parts are shown rounded to 0.1, so adding them up by hand can land
   // 0.1 away from the real score. Say so instead of looking like a mistake.
@@ -274,6 +284,85 @@ function pinSources(p) {
   return sources.join(' + ');
 }
 
+function exportDetail(p) {
+  if (p.hasFinalExport) return `final — ${p.finalExportFile}`;
+  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no video named "Final" or "FD")`;
+  return 'none found in this folder';
+}
+
+// How full each drive is, and what moving the Ready projects would do.
+function drivesSection({ spaces, plan, libraryFull }, paint) {
+  if (!spaces || spaces.length === 0) return [];
+  const rows = spaces.map((s) => [
+    s.label,
+    s.path,
+    s.space
+      ? `${formatTB(s.space.usedBytes)} of ${formatTB(s.space.totalBytes)} TB used (${formatPercent(s.space.usedPercent)})`
+      : 'not connected',
+  ]);
+  const lines = [
+    '',
+    paint.bold('Drives'),
+    ...renderTable(
+      [
+        { header: 'Drive', align: 'left' },
+        { header: 'Path', align: 'left' },
+        { header: 'Space', align: 'left' },
+      ],
+      rows,
+      { width: Infinity },
+    ),
+  ];
+  if (!plan) return lines;
+
+  lines.push('', paint.bold('Move plan — Ready projects → Library HDD'));
+  if (plan.readyCount === 0) {
+    lines.push('  No projects are Ready yet.');
+  } else {
+    const working =
+      plan.workingPercentNow === null
+        ? ''
+        : ` — the Working SSD goes from ${formatPercent(plan.workingPercentNow)} to ${formatPercent(plan.workingPercentAfter)} full`;
+    lines.push(`  Moving ${plural(plan.readyCount, 'Ready project')} frees ${formatGB(plan.readyBytes)} GB${working}.`);
+  }
+  if (!plan.libraryConnected) {
+    lines.push('  The Library HDD isn\'t connected — plug it in to check how much room it has.');
+    return lines;
+  }
+  if (plan.readyCount > 0) {
+    lines.push(
+      plan.fitsOnLibrary
+        ? `  They fit on the Library: it would be ${formatPercent(plan.libraryPercentAfter)} full afterwards.`
+        : paint.red(`  They DON'T all fit on the Library: ${formatGB(-plan.libraryFreeAfterBytes)} GB short.`),
+    );
+  }
+  if (plan.libraryStatus === 'full-now') {
+    lines.push(
+      paint.yellow(
+        `  The Library is already ${formatPercent(plan.libraryPercentNow)} full — moves to the Archive start at ` +
+          `${libraryFull.startAtPercent}%.`,
+      ),
+    );
+  } else if (plan.libraryStatus === 'full-after' && plan.readyCount > 0) {
+    lines.push(
+      paint.yellow(
+        `  ${plan.fitsOnLibrary ? 'That would take' : 'They would take'} the Library past ` +
+          `${libraryFull.startAtPercent}%, where moves to the Archive start.`,
+      ),
+    );
+  }
+  if (plan.archiveBytesNeeded > 0) {
+    lines.push(
+      paint.yellow(
+        `  Move about ${formatGB(plan.archiveBytesNeeded)} GB of the Library's oldest projects to the Archive ` +
+          `${plan.readyCount > 0 ? 'first, ' : ''}to bring it down to ${libraryFull.targetPercent}%` +
+          `${plan.readyCount > 0 ? ' after this move' : ''}. (Phase 3 will list which ones.)`,
+      ),
+    );
+  }
+  return lines;
+}
+
 function detailsSection({ projects, scored, weights }, paint) {
   const lines = ['', paint.bold('Details')];
   projects.forEach((p, i) => {
@@ -291,7 +380,7 @@ function detailsSection({ projects, scored, weights }, paint) {
       `     By type (GB)  ${byType}`,
       `     Last edited   ${formatDate(p.lastEditedMs, { withTime: true })}   ${p.lastEditedFile ?? '(no dated files)'}`,
       `     Project file  ${formatDate(p.lastProjectSaveMs, { withTime: true })}   ${p.lastProjectSaveFile ?? '(none found in this folder)'}`,
-      `     Export        ${p.hasExport ? `yes — e.g. ${p.exportExampleFile}` : 'no export found in this folder'}`,
+      `     Export        ${exportDetail(p)}`,
       `     From name     ${nameParts}`,
     );
     if (scored) lines.push(`     Score         ${scoreExplanation(p, weights)}`);
@@ -310,12 +399,12 @@ function databaseSection({ saved, dbPath }, paint) {
     return [
       '',
       paint.bold('Database'),
-      '  Not saved: --root scans cover only part of the SSD, so they are never saved.',
-      '  Run `npm run scan` without --root to save results.',
+      '  Not saved: only full scans of the Working SSD are saved. A --root scan (one folder, or',
+      '  another drive) is a preview. Run `npm run scan` without --root to save results.',
     ];
   }
   const parts = [`${formatCount(saved.added)} new`, `${formatCount(saved.updated)} updated`];
-  if (saved.returned > 0) parts.push(`${formatCount(saved.returned)} back on the SSD`);
+  if (saved.returned > 0) parts.push(`${formatCount(saved.returned)} back on the Working SSD`);
   parts.push(`${formatCount(saved.markedMissing)} no longer found (marked missing, kept for history)`);
   return [
     '',
@@ -333,14 +422,31 @@ function databaseSection({ saved, dbPath }, paint) {
 //   details      – include the per-project details section
 //   saved/dbPath – what was saved to the database (see databaseSection);
 //                  leave `saved` undefined to leave the section out
+//   spaces/plan  – drive space and the move plan (optional)
 //   color/width  – terminal settings
-function renderReport({ scan, projects, scored = false, weights, configSource, elapsedMs, details, saved, dbPath, color, width }) {
+function renderReport({
+  scan,
+  projects,
+  scored = false,
+  weights,
+  configSource,
+  elapsedMs,
+  details,
+  saved,
+  dbPath,
+  color,
+  width,
+  spaces,
+  plan,
+  libraryFull,
+}) {
   const paint = makePainter(color);
-  const context = { scan, projects, scored, weights, configSource, elapsedMs, width, saved, dbPath };
+  const context = { scan, projects, scored, weights, configSource, elapsedMs, width, saved, dbPath, spaces, plan, libraryFull };
   const lines = [
     ...headerSection(context, paint),
     ...projectTableSection(context, paint),
     ...(scored ? bucketSummarySection(context, paint) : []),
+    ...drivesSection(context, paint),
     ...sharedSection(context, paint),
     ...looseFilesSection(context, paint),
     ...skippedSection(context, paint),
@@ -370,7 +476,7 @@ function formatAgo(ms, now) {
 function savedHeaderSection({ lastScan, lastAttempt, shared, dbPath, now }, paint) {
   const lines = [
     paint.bold('SSD Offload Dashboard — saved results (no rescan)'),
-    `  Drive      ${lastScan.root}`,
+    `  Scanned    Working SSD — ${lastScan.root}`,
     `  Last scan  ${formatDate(lastScan.startedMs, { withTime: true })} (${formatAgo(lastScan.startedMs, now)}) · ` +
       `${plural(lastScan.projectCount, 'project')} + ${plural(shared.length, 'shared folder')} · ` +
       `${plural(lastScan.fileCount, 'file')} · ${formatGB(lastScan.totalBytes)} GB · ` +
@@ -406,8 +512,8 @@ function missingSection({ missing, width }, paint) {
     .map((p) => [p.name, formatGB(p.sizeBytes), formatDate(p.lastScannedMs), p.scoring ? p.scoring.bucket : '—']);
   return [
     '',
-    paint.bold('No longer found on the SSD — kept in the database for history, not ranked'),
-    paint.dim('  (offloaded, renamed, deleted, or now skipped by your config)'),
+    paint.bold('No longer on the Working SSD — kept in the database for history, not ranked'),
+    paint.dim('  (moved to the Library, renamed, deleted, or now skipped by your config)'),
     ...renderTable(
       [
         { header: 'Project', align: 'left', flex: true, shorten: shortenPath },
@@ -426,11 +532,25 @@ function missingSection({ missing, width }, paint) {
 //   lastAttempt – the latest scan of any status, to warn if it failed
 //   projects    – ranked projects still on the SSD, in display order (with `scoring`)
 //   shared      – shared folders still on the SSD
-//   missing     – rows no longer found on the SSD
+//   missing     – rows no longer on the Working SSD
+//   spaces/plan – drive space right now and the move plan for the saved Ready projects (optional)
 //   now         – the current time, for "3 days ago"
-function renderSavedReport({ lastScan, lastAttempt, projects, shared, missing, dbPath, now = Date.now(), color, width }) {
+function renderSavedReport({
+  lastScan,
+  lastAttempt,
+  projects,
+  shared,
+  missing,
+  dbPath,
+  spaces,
+  plan,
+  libraryFull,
+  now = Date.now(),
+  color,
+  width,
+}) {
   const paint = makePainter(color);
-  const context = { lastScan, lastAttempt, projects, shared, missing, dbPath, now, scored: true, width };
+  const context = { lastScan, lastAttempt, projects, shared, missing, dbPath, spaces, plan, libraryFull, now, scored: true, width };
   // The scan's warnings were saved as plain messages, already prefixed with
   // the folder name, so no per-folder warnings are passed here.
   const savedScan = { warnings: lastScan.errors, projects: [], shared: [] };
@@ -439,6 +559,7 @@ function renderSavedReport({ lastScan, lastAttempt, projects, shared, missing, d
     ...projectTableSection(context, paint),
     ...bucketSummarySection(context, paint),
     ...yourPinsSection(context, paint),
+    ...drivesSection(context, paint),
     ...sharedSection({ scan: { shared }, width }, paint),
     ...missingSection(context, paint),
     ...warningsSection({ scan: savedScan }, paint),
@@ -449,4 +570,4 @@ function renderSavedReport({ lastScan, lastAttempt, projects, shared, missing, d
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { renderReport, renderSavedReport, renderTable, formatGB, formatDate, shortenText, shortenPath };
+module.exports = { renderReport, renderSavedReport, renderTable, formatGB, formatTB, formatDate, shortenText, shortenPath };

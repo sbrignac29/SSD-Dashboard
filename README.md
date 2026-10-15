@@ -1,25 +1,43 @@
 # SSD Offload Dashboard
 
-Scans your working SSD, finds video/photo projects that are old or finished, and
-ranks them so you know what to move to archive storage first.
+Scans your working SSD, finds video/photo projects that are finished, and tells
+you which ones to move off it — and whether they'll fit where they're going.
 
-**Phase 1 (done):** a Terminal command, `npm run scan`, that prints a ranked table.
+**Your workflow, which the app follows:**
+
+```
+ cards ──▶  Working SSD (2TB)  ──▶  Library HDD (2TB)  ──▶  Archive HDD (28TB)
+            /Volumes/BRIGSMEDIA     /Volumes/BRIGSMEDIA     /Volumes/Expansion/
+            offload + edit here     LIBRARY                 BRIGSMEDIA ARCHIVE
+                                    finished, recent        everything older,
+                                    projects                once the Library
+                                                            reaches 90% full
+          Move 1: finished + untouched    Move 2: oldest first
+          for 14 days                     (Phase 3)
+```
+
+**Phase 1 (done):** a Terminal command, `npm run scan`, that ranks the working
+SSD's projects for Move 1 and shows how full each drive is.
 **Phase 2 (now):** scan results are saved in a database (`data/dashboard.db`),
 so `npm run report` shows them instantly without rescanning, and
 `npm run pin` marks projects you want to keep.
-**Phase 3 (next):** a dashboard in your browser, nightly scans, Notion status.
+**Phase 3 (next):** a dashboard in your browser, nightly scans, the Library →
+Archive list for Move 2, and Notion status.
 
-> **Safety promise.** This app only ever *reads* your SSD. It never deletes,
-> moves, renames, or writes anything there. The only folder it writes to is its
-> own `data/` folder (where the database lives). A test
+> **Safety promise.** This app only ever *reads* your drives. It never deletes,
+> moves, renames, or writes anything on the Working SSD, the Library, or the
+> Archive. The only folder it writes to is its own `data/` folder (where the
+> database lives). A test
 > (`tests/safety.test.js`) fails if code that can change files ever sneaks into
-> the app.
+> the app. Moving projects stays your job (with Vericopy) until you ask for
+> that feature.
 
 ---
 
 ## 1. What you need
 
-- A Mac with your SSD plugged in.
+- A Mac with your Working SSD plugged in (plug in the Library too, so the app
+  can check how much room it has).
 - **Node.js 22 or newer.** Check in Terminal:
   ```
   node -v
@@ -31,8 +49,8 @@ so `npm run report` shows them instantly without rescanning, and
 
 ## 2. Get the code
 
-Put the app on your Mac's internal drive, **not on the SSD** (the app refuses to
-run from the drive it scans). For example:
+Put the app on your Mac's internal drive, **not on any of your media drives**
+(the app refuses to run from one). For example:
 
 ```
 mkdir -p ~/Code && cd ~/Code
@@ -67,13 +85,16 @@ cp config.example.json config.json
   `package.json`.
 - `cp` copies the example settings into **your own** `config.json`. Git ignores
   that file, so your paths (and later, your Notion key) never get uploaded.
-  (Skip this if you already made one in Phase 1.)
 
-Open `config.json` in a code editor (like VS Code) and check `ssdPath` is your
-drive (`/Volumes/BRIGSMEDIA`). If you use TextEdit, first turn off
-**Edit → Substitutions → Smart Quotes** — JSON needs straight `"` quotes, not
-curly `“ ”` ones. If you skip this step, the app uses the example settings
-as-is and tells you so.
+The example settings already have your three drives. Open `config.json` in a
+code editor (like VS Code) if you want to change anything. If you use TextEdit,
+first turn off **Edit → Substitutions → Smart Quotes** — JSON needs straight
+`"` quotes, not curly `“ ”` ones. If you skip this step, the app uses the
+example settings as-is and tells you so.
+
+Made a `config.json` before the three-drive update? The app will say
+`"ssdPath" was replaced by the "drives" section` — just copy the example again
+(`cp config.example.json config.json`) and redo any edits.
 
 ## 4. Run a scan
 
@@ -81,20 +102,22 @@ as-is and tells you so.
 npm run scan
 ```
 
-This scans the SSD, **saves the results to the database**, and prints the
-ranked table. At the bottom it says what changed in the database, e.g.
+This scans the Working SSD, **saves the results to the database**, and prints
+the ranked table, drive space, and move plan. At the bottom it says what
+changed in the database, e.g.
 `Saved to data/dashboard.db — 2 new · 41 updated · 1 no longer found`.
 
 All the commands:
 
 | Command | What it does |
 |---|---|
-| `npm run scan` | Scan, save to the database, and print the ranked table |
-| `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, and the score math |
+| `npm run scan` | Scan the Working SSD, save to the database, and print the ranked table, drive space, and move plan |
+| `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, which export counted, and the score math |
 | `npm run report` | Print the saved results from the database, **without scanning**. Instant, and works with the SSD unplugged |
 | `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 7) |
 | `npm run pin` | List the pinned projects |
-| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder as a quick preview (its subfolders are treated as projects). **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher than in a full scan. Decide what to offload from a full `npm run scan` |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder as a quick preview (its subfolders are treated as projects). **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA LIBRARY"` | Peek at what's on the Library. **Not saved** (its buckets still describe Move 1; the proper Move 2 view comes in Phase 3) |
 | `npm run scan -- --help` | List the options |
 
 (The `--` tells npm "everything after this goes to the command, not to npm".)
@@ -102,12 +125,12 @@ All the commands:
 The first time, macOS may ask whether Terminal can access files on a removable
 volume. Click **Allow**.
 
-**When does the database update?** Every `npm run scan` (without `--root`).
-A rescan updates each project's row; it never creates duplicates. A project
-that's gone from the SSD (offloaded, renamed, deleted) is **marked missing,
-not deleted**, so its history stays. `npm run report` lists those under "No
-longer found on the SSD". A scan that fails (SSD not plugged in) is recorded
-as failed and changes nothing else.
+**When does the database update?** Every `npm run scan` of the whole Working
+SSD (without `--root`). A rescan updates each project's row; it never creates
+duplicates. A project that's gone from the SSD (moved to the Library, renamed,
+deleted) is **marked missing, not deleted**, so its history stays.
+`npm run report` lists those under "No longer on the Working SSD". A scan
+that fails (SSD not plugged in) is recorded as failed and changes nothing else.
 
 **Nightly scans (not running yet).** The job that scans at 2:00 AM every night
 is built (`src/jobs/nightly.js`), but it starts with the dashboard server in
@@ -117,25 +140,28 @@ missed or failed night is harmless; it's logged, and the next one tries again.
 
 ## 5. Reading the report
 
-**Projects table** — best offload candidates first (all Ready projects, then
-Review, then Keep; highest score first within each):
+**Projects table** — Ready projects first (biggest first, because moving those
+frees the most space), then Review, then Keep (highest score first):
 
 | Column | Meaning |
 |---|---|
 | Size (GB) | Total size of the project folder, in the same units Finder uses |
 | Last edited | Date of the newest file in the project (hidden system files like `.DS_Store` don't count — Finder rewrites those just from browsing) |
-| Export | `yes` if the project folder has files inside a folder named like Exports, Deliverables, Renders or Output, or a video named with "final", "master" or "export" (a number or version on the end counts too: `FINALv2`). The exact word lists are `fileTypes.exportFolderWords` / `exportFileWords` in the config. `scan:details` names the file that counted |
-| Score | 0–100, higher = better candidate to offload (see below) |
-| Bucket | **Ready** (70+), **Review** (40–69.9), **Keep** (under 40) |
+| Export | **final** — a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`): the project is finished. **draft** — there are exports, but none named Final/FD, so it may still be in revisions. **no** — no exports found |
+| Score | 0–100: how good a candidate it is (see section 6). Orders Review and Keep |
+| Bucket | **Ready** — finished (final export) and untouched for 14+ days: move it to the Library. **Review** — finished but edited in the last 14 days, or unfinished but old/big. **Keep** — unfinished, or pinned |
 
 Below the table:
 - **Buckets** — how many projects and GB are in each bucket.
-- **Safety overrides** — projects whose bucket was lowered. Pinned projects are
-  always Keep. A project is never Ready if it was edited in the last 14 days,
-  or if the scanner can't be sure when it was last edited (files with future
-  dates from a camera with a wrong clock, or folders it couldn't read).
+- **Notes** — why a finished project isn't Ready yet (e.g. "edited 3 days ago —
+  Ready in 11 days if left alone"), and pinned projects.
+- **Drives** — how full the Working SSD, Library and Archive are (or "not
+  connected").
+- **Move plan** — how much moving the Ready projects frees on the SSD, whether
+  they fit on the Library, and a warning when the Library is (or would be) 90%
+  full, with roughly how much of its oldest work to move to the Archive.
 - **Shared folders** — folders used by many projects (like `Resolve Project
-  Library`). Measured, never ranked. Offloading the Resolve library would break
+  Library`). Measured, never ranked. Moving the Resolve library would break
   every Resolve project.
 - **Loose files** — files sitting at the top of the drive (or directly inside a
   container folder) rather than in a project.
@@ -147,34 +173,52 @@ Below the table:
 - the **date of the last scan** and how long ago it was (and a red warning if
   a later scan failed, e.g. the SSD wasn't plugged in),
 - **Your pins**: projects you pinned with `npm run pin`,
-- **No longer found on the SSD**: projects a scan used to see but the latest
-  one didn't, with the date they were last seen and their last bucket.
+- **No longer on the Working SSD**: projects a scan used to see but the latest
+  one didn't (usually because you moved them to the Library), with the date
+  they were last seen and their last bucket.
 
-It doesn't list loose files or skipped items (those aren't saved). Run
-`npm run scan` for those.
+Its Drives and Move plan sections use how full the drives are right now, with
+the Ready projects from the last scan. It doesn't list loose files or skipped
+items (those aren't saved); run `npm run scan` for those.
 
-## 6. How the score works
+## 6. When is a project Ready?
+
+**Ready = finished + untouched for 14 days + nothing uncertain.**
+
+- **Finished** means a **final export**: a video file in the project whose name
+  contains the word "Final" or "FD" (a version or number on the end is fine:
+  `FINALv2`, `FD2`). Draft exports don't count. Later, Notion status
+  (Complete/Delivered) will count too.
+- **Untouched for 14 days** means no file in the project changed in that time.
+- **Nothing uncertain:** a project isn't Ready if some of its folders couldn't
+  be read, or if it has files with future dates (a camera with a wrong clock),
+  because then the app can't be sure when you last worked on it.
+- A pinned project (with `npm run pin`, or in `folders.keepPinned`) is always
+  Keep.
+
+**The score** ranks everything else:
 
 ```
 Score = 0.45 × Done + 0.35 × Age + 0.20 × Size        (each part 0–100)
 ```
 
-- **Done:** 100 if Notion says Complete/Delivered (from a later phase), 70 if the
-  project has an export, otherwise 0.
+- **Done:** 100 if Notion says Complete/Delivered (later phase), 70 if there's a
+  final export, otherwise 0.
 - **Age:** 0 if edited in the last 14 days, then rising evenly to 100 at 120 days.
 - **Size:** the project's size as a percentage of the biggest project in the scan.
 
-Example: has an export (70), last edited 67 days ago (halfway from 14 to 120 →
-50), half the size of the biggest project (50):
-`0.45×70 + 0.35×50 + 0.20×50 = 31.5 + 17.5 + 10 = 59` → **Review**.
+Unfinished projects scoring 40 or more are **Review** (big or old projects that
+probably need a final export or a decision); below 40 they're **Keep**.
 
-Safety overrides: a project edited in the last 14 days is never Ready, and a
-pinned project (with `npm run pin` or in `folders.keepPinned`) is always Keep.
+Example: final export (70), last edited 67 days ago (halfway from 14 to 120 →
+50), half the size of the biggest project (50):
+`0.45×70 + 0.35×50 + 0.20×50 = 31.5 + 17.5 + 10 = 59` — and it's **Ready**,
+because it's finished and untouched for 14+ days.
 
 ## 7. Pinning projects (always Keep)
 
-Some projects should never be offloaded, however old they look: a client who
-comes back for re-edits, your reel, a template project. Pin them:
+Some projects should stay on the Working SSD however finished they look: a
+client who comes back for re-edits, your reel, a template project. Pin them:
 
 ```
 npm run pin -- "Parker Soccer 10-3"
@@ -182,7 +226,7 @@ npm run pin -- "Parker Soccer 10-3"
 
 ```
 Pinned "Parker Soccer 10-3" as Keep.
-  Pinned as Keep (would be Ready at 86.5).
+  Pinned as Keep (would be Ready).
   Run the same command again to unpin it.
 ```
 
@@ -194,7 +238,7 @@ Pinned "Parker Soccer 10-3" as Keep.
   everything that's pinned.
 - A pinned project is **always Keep**, through every future scan, until you
   unpin it. The score still shows, so you can see what it would be.
-- Only the database changes; nothing on the SSD does.
+- Only the database changes; nothing on any drive does.
 
 **Two ways to pin.** `npm run pin` saves your pin in the database. You can
 also list folders under `folders.keepPinned` in `config.json` (handy for a
@@ -239,11 +283,11 @@ Things to know when reading it:
   `2026-10-15T07:00:00.000Z`. The queries below convert them to your Mac's
   time with `datetime(…, 'localtime')`.
 - **Sizes are in bytes.** Divide by 1,000,000,000 for GB (`size_bytes / 1e9`).
-- **1 = yes, 0 = no** (for `has_export`, `pinned_keep`, `missing`, …).
+- **1 = yes, 0 = no** (for `has_final_export`, `pinned_keep`, `missing`, …).
 
 ### Queries to paste into "Execute SQL"
 
-Projects still on the SSD, best offload candidates first:
+Projects still on the Working SSD, in bucket order (Ready, Review, Keep):
 
 ```sql
 SELECT name, round(size_bytes / 1e9, 2) AS size_gb, score, bucket,
@@ -262,7 +306,7 @@ WHERE kind = 'project' AND missing = 0
 GROUP BY bucket;
 ```
 
-Projects no longer on the SSD (offloaded, renamed, or deleted):
+Projects no longer on the Working SSD (moved to the Library, renamed, or deleted):
 
 ```sql
 SELECT name, round(size_bytes / 1e9, 2) AS size_gb,
@@ -282,13 +326,13 @@ ORDER BY id DESC;
 
 ### What's in each table
 
-**`projects`**: one row per project folder (and per shared folder), updated
-by every scan.
+**`projects`**: one row per project folder (and per shared folder) on the
+Working SSD, updated by every scan.
 
 | Column | Meaning |
 |---|---|
 | `id` | Row number. Never changes |
-| `path` | Where the folder is, from the top of the SSD (`NCHS Football/Week 1`). Unique: a rescan updates this row instead of adding another |
+| `path` | Where the folder is, from the top of the drive (`NCHS Football/Week 1`). Unique: a rescan updates this row instead of adding another |
 | `name` | Name as the report shows it (`NCHS Football / Week 1`) |
 | `kind` | `project` (ranked) or `shared` (measured, never ranked) |
 | `client` | The container for container shoots (`NCHS Football`); empty for others until Notion sync (Phase 3) |
@@ -297,22 +341,25 @@ by every scan.
 | `file_count` | Number of files |
 | `last_modified`, `last_modified_file` | Newest real file, and which file |
 | `last_nle_save`, `last_nle_save_file` | Last save of a project file (.drp, .prproj, …). NLE = "non-linear editor" (Resolve, Premiere) |
-| `has_export`, `export_file` | Whether an export exists, and the file that proved it |
+| `has_export`, `export_file` | Whether any export exists (drafts too), and an example file |
+| `has_final_export`, `final_export_file` | Whether a video export named "Final"/"FD" exists (the project is finished), and which file |
 | `future_dated_files`, `incomplete` | Signs the last-edit date is uncertain (camera clock, unreadable folders), which block Ready |
-| `score`, `bucket`, `score_notes` | The result, and why a bucket was overridden |
+| `score`, `bucket`, `score_notes` | The result, and why a finished project isn't Ready yet or that it's pinned |
 | `pinned_keep` | 1 = you pinned it with `npm run pin`. Scans never change this |
 | `first_seen` | The first scan that found it |
 | `last_scanned` | The latest scan that found it |
-| `missing` | 1 = the latest scan didn't find it. The row is kept for history |
+| `missing` | 1 = the latest scan didn't find it on the Working SSD. The row is kept for history |
 
 **`scans`**: one row per scan: `started_at`, `finished_at`, `status`
 (`finished` or `failed`), `root` (the folder scanned), `project_count`,
 `file_count`, `total_bytes`, and `errors` (the warnings, or why it failed, as a
 JSON list).
 
-**`archive_log`**: empty for now. When offloading arrives (Phase 4) it gets
-one row per offload: `archived_at`, `project_id` (points at the `projects`
-row), `project_path`, `destination`, `size_bytes`, `checksum_result`.
+**`archive_log`**: empty for now. When moving projects arrives (Phase 4) it
+gets one row per move: `archived_at`, `project_id` (points at the `projects`
+row), `project_path`, `destination_drive` (`library` or `archive`),
+`size_bytes`, `checksum_result`. Together, those rows are each project's trail
+(SSD → Library on one date → Archive on another), so you can always find it.
 
 ### Prefer Terminal?
 
@@ -329,26 +376,31 @@ to leave.
 
 - **Back up:** copy `data/dashboard.db` somewhere while no scan is running.
 - **Start over:** delete `data/dashboard.db`; the next `npm run scan` makes a
-  new one. You lose your pins, the scan history, and the "no longer found"
-  list.
+  new one. You lose your pins, the scan history, and the "no longer on the
+  Working SSD" list.
 
 ## 9. Settings (`config.json`)
 
 | Setting | What it does |
 |---|---|
-| `ssdPath` | Where your SSD is mounted. Run `ls /Volumes` to see drive names |
-| `archivePath` | Where offloaded projects will go (later phase). Leave `""` for now |
-| `ageDays.recent` / `ageDays.max` | The 14-day "too recent" window and the 120-day "fully old" point |
+| `drives.working` | Your Working SSD (`/Volumes/BRIGSMEDIA`). Run `ls /Volumes` to see drive names |
+| `drives.library` | Your Library HDD (`/Volumes/BRIGSMEDIA LIBRARY`) |
+| `drives.archive` | Your Archive folder (`/Volumes/Expansion/BRIGSMEDIA ARCHIVE`). Use `""` for a drive you don't have |
+| `libraryFull.startAtPercent` | When the Library is this full (90%), it's time to move its oldest projects to the Archive |
+| `libraryFull.targetPercent` | How far down to bring the Library when that happens (70% — change it if you prefer) |
+| `ageDays.recent` / `ageDays.max` | The 14-day "still being worked on" window and the 120-day "fully old" point |
 | `weights` | The 0.45 / 0.35 / 0.20 mix. Must add up to 1 |
-| `buckets.ready` / `buckets.review` | The 70 and 40 cut-offs |
+| `buckets.review` | Unfinished projects scoring this or more (40) are Review instead of Keep |
 | `doneStatuses` | Notion statuses that mean "done" (later phase) |
 | `folders.ignore` | Top-level folders to skip completely |
 | `folders.shared` | Folders used across projects: measured, never ranked |
 | `folders.containers` | Folders that hold many shoots (like `NCHS Football`). Each subfolder becomes its own project |
 | `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 7) |
-| `fileTypes.*` | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
+| `fileTypes.finalExportWords` | Words in a video export's name that mean "final" (`final`, `fd`) |
+| `fileTypes.*` (the rest) | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
 
-Folder names are matched ignoring upper/lower case. To name a subfolder of a
+The folder lists apply to every drive (they're laid out the same way). Folder
+names are matched ignoring upper/lower case. To name a subfolder of a
 container, write `"NCHS Football/Graphics"`.
 
 **Please review these lists** — they were guessed from your folder names:
@@ -379,8 +431,8 @@ should match closely. Notes:
   macOS creates on non-Mac drives.
 
 **Last edited.** The details name the exact newest file, e.g.
-`Last edited 2026-06-09 14:03   Exports/Week 1 Highlights.mp4`. Find that file
-in Finder, Get Info, and check **Modified** matches. Note that Finder's
+`Last edited 2026-06-09 14:03   Exports/Week 1 Highlights FD.mp4`. Find that
+file in Finder, Get Info, and check **Modified** matches. Note that Finder's
 "Date Modified" on a *folder* means something different (when files were last
 added or removed in it), so compare the file, not the folder.
 
@@ -393,32 +445,38 @@ find "/Volumes/BRIGSMEDIA/Soccer 8-24" -type f ! -name '.*' -exec stat -f '%Sm  
 
 It lists the 3 most recently modified files, newest last.
 
-**Export.** The details line `Export  yes — e.g. Exports/Week 1 Highlights.mp4`
-names the file that counted. Find it in Finder. `no` means nothing inside the
-project folder looked like a finished export (see section 11 for why exports
-saved elsewhere don't count).
+**Export.** The details line `Export  final — Exports/Week 1 Highlights FD.mp4`
+names the file that made the project count as finished. `draft only` names an
+export that didn't count because it isn't named Final/FD.
+
+**Drive space.** Select the drive in Finder's sidebar and press **⌘I**:
+"Capacity" and "Available" should match the Drives section (both in decimal
+TB/GB).
 
 If something looks wrong, note the project name and what Finder says, and we'll
 adjust the rules.
 
-## 11. Folder naming and where to save things (optional, but it helps)
+## 11. Naming exports and where to save things
 
-You **don't need to rename anything** for the app to work, and renaming a
-folder never changes its score (scores come from file dates, sizes and
-exports, not names). What *does* change the ranking is **where files live**:
+You **don't need to rename project folders** — folder names don't change scores.
+What matters:
 
-1. **Save each project's finished exports inside the project folder**, in a
-   subfolder called `Exports` (or `Deliverables`):
-   `Soccer 8-24/Exports/Soccer 8-24 FINAL.mp4`.
-   Exports saved in the shared `FINAL EXPORTS` / `FINAL FINAL RENDERS` folders,
-   or loose at the top of the drive, can't be linked back to their project, so
-   that project shows `Export: no` and scores up to 31.5 points too low.
-2. **Save each project's Premiere project (`.prproj`) inside its folder.**
+1. **Name the finished export with "FD" or "Final"** — e.g.
+   `Soccer 8-24 FD.mp4`. That's how the app knows a project is done. Leave
+   drafts and revision cuts without it (`Soccer 8-24 v3.mp4`).
+2. **Save it inside the project folder**, ideally in an `Exports` subfolder:
+   `Soccer 8-24/Exports/Soccer 8-24 FD.mp4`. Exports saved in the shared
+   `FINAL EXPORTS` / `FINAL FINAL RENDERS` folders, or loose at the top of the
+   drive, can't be linked back to their project, so it never counts as finished.
+3. **Save each project's Premiere project (`.prproj`) inside its folder.**
    Project files kept in the shared `Project files` folder don't count as
-   editing that project, so a project you're revising could look old.
-3. **Container shoots:** put each game's exports inside that game's folder
+   editing that project, so a project you're revising could look untouched.
+4. **Container shoots:** put each game's exports inside that game's folder
    (`NCHS Football/Week 3 vs X/Exports/`), not in one shared
    `NCHS Football/Exports` folder.
+5. **Resolve projects:** before moving a Resolve project to the Library, export
+   a `.drp` (or a Resolve project archive) into its folder. Its timeline lives
+   in `Resolve Project Library` on the SSD, not in the project folder.
 
 For **new** folders, a date-first name helps you (and later, Notion matching):
 `2026-08-24 Next Elite - Soccer Training`. It sorts by date in Finder and
@@ -436,27 +494,29 @@ npm test
 ```
 
 Tests are small programs that run the app's code with known inputs and check
-the answers — including the scoring formula, the file sorting rules, a scan of
-a fake drive, the database (scanning twice creates no duplicates, missing
-projects are kept, a pinned project is never Ready), the nightly schedule, and
-the safety checks. All should say `pass`.
+the answers — including the scoring rules, the file sorting rules, the move
+plan, a scan of a fake drive, the database (scanning twice creates no
+duplicates, missing projects are kept, a pinned project is never Ready), the
+nightly schedule, and the safety checks. All should say `pass`.
 
 The database tests use their own throwaway database inside `data/`; they never
 touch your real `data/dashboard.db`.
 
 ## 13. Troubleshooting
 
-- **"Can't find /Volumes/BRIGSMEDIA. Is the SSD plugged in?"** — plug it in, or
-  run `ls /Volumes` and fix `ssdPath` in `config.json`.
+- **"Can't find /Volumes/BRIGSMEDIA. Is the drive plugged in?"** — plug it in,
+  or run `ls /Volumes` and fix `drives.working` in `config.json`.
 - **"macOS blocked access" / "Operation not permitted"** — System Settings →
   Privacy & Security → Files and Folders → Terminal → turn on
   **Removable Volumes**. Then run the scan again.
-- **"This app is stored on the drive it scans"** — move the app folder off the
-  SSD (e.g. to `~/Code`).
+- **"This app is stored inside your …"** — move the app folder off your media
+  drives (e.g. to `~/Code`).
 - **"config.json isn't valid JSON"** — look for a missing or extra comma, or
   curly quotes (`“ ”`) that TextEdit swapped in for straight ones (`"`).
 - **"The SSD disconnected during the scan"** — the drive went away mid-scan
   (cable, dock, sleep). Plug it back in and run the scan again.
+- **Library shows "not connected"** — plug it in to get the move plan's
+  "will it fit" check. Everything else works without it.
 - **"The database library isn't installed"** — run `npm install` in the app
   folder (needed once after pulling Phase 2).
 - **"The database library couldn't load"** — run `npm rebuild better-sqlite3`.
@@ -477,21 +537,25 @@ touch your real `data/dashboard.db`.
 - **DaVinci Resolve project library.** Your Resolve projects live in the shared
   `Resolve Project Library`, not in each project folder. If you edit a project
   in Resolve without rendering or adding files, that project folder's dates
-  don't change, so it can look older than it is. Check before offloading
+  don't change, so it can look untouched when it isn't. Check before moving
   anything Resolve-based. (A later phase can read the library's per-project
   save dates.)
-- **Exports and project files saved outside the project folder** (in
-  `FINAL EXPORTS`, `FINAL FINAL RENDERS`, `Project files`, or loose at the top
-  of the drive) aren't linked to their project. See section 11.
+- **Exports and project files saved outside the project folder** aren't linked
+  to their project. See section 11.
+- **A final-looking name isn't proof.** A video named with "Final" (say, footage
+  of a "State Final" game) counts as a final export. `scan:details` always names
+  the file that counted, so you can check.
 - **Copied footage keeps its original dates.** Finder keeps a file's modified
   date when copying, so footage copied from an old card looks old until you
   start editing (your project file and renders will then be newer).
+- **Move 2 (Library → Archive) list** comes in Phase 3. For now the move plan
+  tells you how much to move once the Library hits 90%.
 - **Renaming a project folder** makes it look like a new project: the old name
   is marked missing and the new name starts fresh (pin it again if it was
   pinned).
-- **One SSD per database.** Projects are tracked by their path from the top of
-  the drive. If you point `ssdPath` at a different drive, the first drive's
-  projects show as missing.
+- **One Working SSD per database.** Projects are tracked by their path from the
+  top of the drive. If you point `drives.working` at a different drive, the
+  first drive's projects show as no longer on the SSD.
 - **Settings changes apply at the next scan.** `npm run report` shows the
   scores saved by the last scan, so after editing `config.json` (weights,
   pins, shared folders…) run `npm run scan` to see the effect.
@@ -508,10 +572,12 @@ src/cli/format.js        formats the printed reports
 src/db.js                the database: tables, saving scans, pins (writes only in data/)
 src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and the nightly job)
 src/jobs/nightly.js      the 2 AM nightly scan (starts with the dashboard server in Phase 3)
-src/scanner/scan.js      walks the SSD (read-only) and collects facts
-src/scanner/classify.js  decides raw / proxy / export / cache / project / other
+src/scanner/scan.js      walks a drive (read-only) and collects facts
+src/scanner/classify.js  decides raw / proxy / export / cache / project / other, and final exports
 src/scanner/parseName.js pulls dates out of folder names ("Soccer 8-24")
-src/scoring/score.js     the scoring formula
+src/scanner/space.js     how full each drive is (read-only)
+src/scoring/score.js     the scoring formula and the Ready/Review/Keep rule
+src/scoring/plan.js      the move plan: will it fit, is the Library full
 src/server.js, src/notion/, src/offload/   later phases (stubs)
 public/                  the dashboard web page (Phase 3)
 tests/                   automated tests
@@ -527,8 +593,10 @@ data/                    the only folder the app writes to: dashboard.db (not up
 - **CLI** — command-line interface: a program you run by typing in Terminal.
 - **mtime** — a file's "modified time": when its contents last changed. The app
   uses this, never "access time" (which changes whenever anything reads a file).
+- **statfs** — the operating system's "how big is this drive, how much is free"
+  question. Read-only.
 - **Symlink** — a shortcut to another file or folder. The scanner never follows
-  them, so it can't wander outside your SSD.
+  them, so it can't wander outside your drives.
 - **Test** — code that runs other code with known inputs and checks the answers.
 - **Route** *(Phase 3)* — a web address the server answers, like
   `/api/projects`, paired with the function that builds the answer.
@@ -551,8 +619,8 @@ data/                    the only folder the app writes to: dashboard.db (not up
 
 ## Roadmap
 
-1. ✅ Scanner, file classifier, scoring, `npm run scan`
+1. ✅ Scanner, file classifier, scoring, `npm run scan`, three-drive config, drive space and move plan
 2. ✅ Database (SQLite), `npm run report`, `npm run pin`, the nightly scan job
-3. Dashboard web page (the server also starts the nightly scans), Notion sync
-   for project status
-4. Offloading through Vericopy + archive log (only when you ask for it)
+3. Dashboard web page (the server also starts the nightly scans), Library →
+   Archive list (Move 2), Notion sync for project status
+4. Moving projects through Vericopy + a log of where each project went (only when you ask for it)

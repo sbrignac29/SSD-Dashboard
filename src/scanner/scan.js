@@ -13,6 +13,7 @@
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { CATEGORIES, createClassifier, isHousekeepingName } = require('./classify');
+const { DRIVE_LABELS, configuredDrives } = require('../config');
 const { parseProjectName } = require('./parseName');
 
 // How many files to ask the OS about at once. Faster than one at a time,
@@ -70,8 +71,8 @@ async function statEntries(absDir) {
 function friendlyRootError(error, root) {
   if (error.code === 'ENOENT') {
     return (
-      `Can't find "${root}". Is the SSD plugged in?\n` +
-      'Run `ls /Volumes` in Terminal to see the names of connected drives, then update "ssdPath" in config.json.'
+      `Can't find "${root}". Is the drive plugged in?\n` +
+      'Run `ls /Volumes` in Terminal to see the names of connected drives, then check "drives" in config.json.'
     );
   }
   if (error.code === 'EPERM' || error.code === 'EACCES') {
@@ -214,8 +215,10 @@ function newFacts(target) {
     lastEditedFile: null,
     lastProjectSaveMs: null, // newest modified time of a project file (.drp, .prproj, ...)
     lastProjectSaveFile: null,
-    hasExport: false,
+    hasExport: false, // any export, including drafts still in revision
     exportExampleFile: null, // the first file that made hasExport true, so you can check it in Finder
+    hasFinalExport: false, // a video export named "Final" or "FD" — the sign the project is finished
+    finalExportFile: null,
     futureDatedFiles: 0,
     futureDatedExample: null,
     skippedLinks: 0,
@@ -248,6 +251,10 @@ function recordFile(facts, name, dir, stats, classifier, now) {
   if (category === 'export' && !facts.hasExport) {
     facts.hasExport = true;
     facts.exportExampleFile = relPath;
+  }
+  if (!facts.hasFinalExport && classifier.isFinalExport(name, dir.context)) {
+    facts.hasFinalExport = true;
+    facts.finalExportFile = relPath;
   }
 
   // Dates: only real files count. Hidden housekeeping files get rewritten
@@ -358,32 +365,43 @@ function unmatchedConfigWarnings(folders, seenKeys) {
   return warnings;
 }
 
-// Where `root` sits inside the SSD, as folder names: [] if it IS the SSD,
-// ["NCHS Football"] for /Volumes/BRIGSMEDIA/NCHS Football, or null if it's
-// somewhere else entirely. realpath gives both paths in their true on-disk
+// Where `root` sits inside `drivePath`, as folder names: [] if it IS the
+// drive, ["NCHS Football"] for /Volumes/BRIGSMEDIA/NCHS Football, or null if
+// it's somewhere else. realpath gives both paths in their true on-disk
 // spelling (macOS ignores upper/lower case), so they compare reliably.
-async function locateInsideSsd(root, ssdPath) {
+async function locateInside(root, drivePath) {
   let realRoot;
-  let realSsd;
+  let realDrive;
   try {
-    [realRoot, realSsd] = await Promise.all([fsp.realpath(root), fsp.realpath(ssdPath)]);
+    [realRoot, realDrive] = await Promise.all([fsp.realpath(root), fsp.realpath(drivePath)]);
   } catch {
-    return root === path.resolve(ssdPath) ? [] : null;
+    return root === path.resolve(drivePath) ? [] : null;
   }
-  const relative = path.relative(realSsd, realRoot);
+  const relative = path.relative(realDrive, realRoot);
   if (relative === '') return [];
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   return relative.split(path.sep);
 }
 
+// Which of the three drives `root` is on, and where on it.
+// Returns { drive: 'working'|'library'|'archive'|null, prefix: [...] }.
+async function locateOnDrives(root, config) {
+  for (const [drive, drivePath] of configuredDrives(config)) {
+    const prefix = await locateInside(root, drivePath);
+    if (prefix !== null) return { drive, prefix };
+  }
+  return { drive: null, prefix: [] };
+}
 
-// Scans the SSD and returns plain data (no classes), so it can be printed and
+
+// Scans a drive and returns plain data (no classes), so it can be printed and
 // saved to the database (src/db.js).
-//   root       – folder to scan; defaults to config.ssdPath. Can be a folder
-//                inside the SSD (npm run scan -- --root ...) or anywhere else.
+//   root       – folder to scan; defaults to the working SSD (drives.working).
+//                Can be a folder inside any of the drives
+//                (npm run scan -- --root ...) or anywhere else.
 //   now        – the time to measure "future-dated" against (tests pass a fixed time)
 //   onProgress – called after each folder with { name, filesScanned }
-async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onProgress = () => {} } = {}) {
+async function scanDrive(config, { root = config.drives.working, now = Date.now(), onProgress = () => {} } = {}) {
   root = path.resolve(root);
 
   let rootStats;
@@ -394,8 +412,10 @@ async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onPr
   }
   if (!rootStats.isDirectory()) throw new ScanError(`"${root}" is a file, not a folder.`);
 
-  const prefix = await locateInsideSsd(root, config.ssdPath);
-  const isWholeSsd = prefix !== null && prefix.length === 0;
+  const { drive, prefix } = await locateOnDrives(root, config);
+  // The folder lists in config describe the working SSD, so only a scan of the
+  // whole working SSD can tell whether a listed name is missing (a typo).
+  const isWholeWorkingSsd = drive === 'working' && prefix.length === 0;
 
   const classifier = createClassifier(config.fileTypes);
   const lists = {
@@ -405,7 +425,7 @@ async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onPr
     keepPinned: keySet(config.folders.keepPinned),
   };
 
-  const plan = await planScan(root, lists, prefix ?? []);
+  const plan = await planScan(root, lists, prefix);
   const progress = { filesScanned: 0 };
   const projects = [];
   const shared = [];
@@ -421,12 +441,18 @@ async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onPr
 
   // "This name matches nothing" warnings only make sense when we've seen the
   // whole SSD; a --root scan only sees part of it.
-  const warnings = isWholeSsd ? [...plan.warnings, ...unmatchedConfigWarnings(config.folders, plan.seenKeys)] : plan.warnings;
+  const warnings = isWholeWorkingSsd
+    ? [...plan.warnings, ...unmatchedConfigWarnings(config.folders, plan.seenKeys)]
+    : plan.warnings;
 
   return {
     root,
-    // 'ssd' = the whole SSD; 'inside-ssd' = one folder on it; 'elsewhere' = not on the SSD
-    scope: isWholeSsd ? 'ssd' : prefix ? 'inside-ssd' : 'elsewhere',
+    // Which drive this was ('working', 'library', 'archive', or null if none),
+    // and whether the scan covered all of it.
+    drive,
+    driveLabel: drive ? DRIVE_LABELS[drive] : null,
+    wholeDrive: drive !== null && prefix.length === 0,
+    scope: isWholeWorkingSsd ? 'working' : 'partial',
     scannedAt: now,
     projects,
     shared,

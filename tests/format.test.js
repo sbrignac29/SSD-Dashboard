@@ -44,7 +44,7 @@ test('renderTable lines up right-aligned numbers', () => {
   assert.deepEqual(lines, ['  Name      GB', '  a       1.00', '  b     100.00']);
 });
 
-test('the saved report shows the last scan, your pins, missing projects, and a later failed scan', () => {
+test('the saved report shows the last scan, your pins, projects no longer on the SSD, and a later failed scan', () => {
   const day = 24 * 60 * 60 * 1000;
   const now = Date.parse('2026-10-18T12:00:00Z');
   const scanned = now - 3 * day;
@@ -57,7 +57,8 @@ test('the saved report shows the last scan, your pins, missing projects, and a l
     projects: [
       {
         name: 'Old Finished', sizeBytes: 6e9, lastEditedMs: now - 200 * day, hasExport: true, pinnedInDatabase: true,
-        scoring: { score: 86.5, bucket: 'Keep', notes: ['Pinned as Keep (would be Ready at 86.5).'] },
+        hasFinalExport: true,
+        scoring: { score: 86.5, bucket: 'Keep', notes: ['Pinned as Keep (would be Ready).'] },
       },
     ],
     shared: [{ name: 'Resolve Project Library', sizeBytes: 1e9, lastEditedMs: now - day }],
@@ -71,8 +72,9 @@ test('the saved report shows the last scan, your pins, missing projects, and a l
   assert.match(text, /Last scan .*\(3 days ago\) · 1 project \+ 1 shared folder · 1,234 files · 7\.00 GB/);
   assert.match(text, /A later scan, .* failed: Can't find "\/Volumes\/BRIGSMEDIA"\. Is the SSD plugged in\?\n/);
   assert.match(text, /Your pins \(npm run pin\)[^\n]*\n  • Old Finished/);
-  assert.match(text, /Pinned as Keep \(would be Ready at 86\.5\)/);
-  assert.match(text, /No longer found on the SSD/);
+  assert.match(text, /Old Finished +6\.00 +\d{4}-\d{2}-\d{2} +final +86\.5 +Keep/);
+  assert.match(text, /Pinned as Keep \(would be Ready\)/);
+  assert.match(text, /No longer on the Working SSD/);
   assert.match(text, /Gone Soon +0\.50 +\d{4}-\d{2}-\d{2} +Ready/);
   assert.match(text, /Resolve Project Library/);
   assert.match(text, /Old Finished: Couldn't open folder "Cache"/);

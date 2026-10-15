@@ -51,7 +51,7 @@ function snapshot(dir) {
 
 function testConfig(folders = {}) {
   return withDefaults({
-    ssdPath: ssd,
+    drives: { working: ssd, library: '', archive: '' },
     folders: { ignore: [], shared: ['Resolve Project Library'], containers: ['NCHS Football'], keepPinned: [], ...folders },
   });
 }
@@ -72,12 +72,13 @@ before(() => {
   base = fs.mkdtempSync(path.join(DATA_DIR, '.test-db-'));
   ssd = path.join(base, 'ssd');
 
-  // Old, finished, and the biggest: 0.45×70 + 0.35×100 + 0.20×100 = 86.5 → Ready
+  // Finished (a video export named "final"), untouched 200 days, the biggest:
+  // 0.45×70 + 0.35×100 + 0.20×100 = 86.5 → Ready
   file('Old Finished/Footage/a.mov', 5000, 200);
   file('Old Finished/Exports/final.mp4', 1000, 200);
-  // Edited 2 days ago → Keep
+  // Unfinished, edited 2 days ago → Keep
   file('Fresh Edit/b.mov', 1000, 2);
-  // A container shoot: 0.35×100 + 0.20×50 = 45 → Review
+  // An unfinished container shoot: 0.35×100 + 0.20×50 = 45 → Review
   file('NCHS Football/Week 1/clip.mov', 3000, 150);
   file('Gone Soon/c.mov', 500, 30);
   file('Resolve Project Library/Projects/QB Era/Project.db', 100, 1);
@@ -162,6 +163,8 @@ describe('saving scans', () => {
     );
     assert.equal(old.has_export, 1);
     assert.equal(old.export_file, 'Exports/final.mp4');
+    assert.equal(old.has_final_export, 1);
+    assert.equal(old.final_export_file, 'Exports/final.mp4');
     assert.equal(old.last_modified, new Date(NOW - 200 * DAY).toISOString());
     assert.equal(old.last_nle_save, null);
     assert.equal(old.score, 86.5);
@@ -183,18 +186,19 @@ describe('saving scans', () => {
 
   it('a failed scan is recorded, and changes no projects', async () => {
     await save(NOW);
-    const unplugged = withDefaults({ ...testConfig(), ssdPath: path.join(base, 'not-plugged-in') });
+    const unplugged = withDefaults({ ...testConfig(), drives: { working: path.join(base, 'not-plugged-in'), library: '', archive: '' } });
     await assert.rejects(save(NOW + HOUR, unplugged), ScanError);
 
     const failed = latestScan(db);
     assert.equal(failed.status, 'failed');
-    assert.match(failed.errors[0], /Is the SSD plugged in\?/);
+    assert.match(failed.errors[0], /Is the drive plugged in\?/);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM projects WHERE missing = 1').get().n, 0);
   });
 
-  it('a --root scan (one folder) is never saved', async () => {
+  it('a --root scan (one folder, or another drive) is never saved', async () => {
     const partial = await scanDrive(testConfig(), { root: path.join(ssd, 'NCHS Football'), now: NOW });
-    assert.throws(() => saveScan(db, partial, testConfig()), /Only full scans/);
+    assert.equal(partial.scope, 'partial');
+    assert.throws(() => saveScan(db, partial, testConfig()), /Only full scans of the Working SSD/);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM projects').get().n, 0);
   });
 });
@@ -234,7 +238,8 @@ describe('pins', () => {
     const pinned = togglePin(db, config, 'old finished'); // any upper/lower case
     assert.equal(pinned.result, 'pinned');
     assert.equal(pinned.project.scoring.bucket, 'Keep');
-    assert.match(pinned.project.scoring.notes[0], /would be Ready at 86\.5/);
+    assert.match(pinned.project.scoring.notes[0], /Pinned as Keep \(would be Ready\)/);
+    assert.equal(pinned.project.scoring.score, 86.5, 'the score still shows what it would be');
     assert.equal(row('Old Finished').bucket, 'Keep');
 
     // Still Keep after more scans, even as it gets older.

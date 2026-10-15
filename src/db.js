@@ -53,14 +53,15 @@ const MIGRATIONS = [
     started_at    TEXT    NOT NULL,     -- when the scan started (file ages are measured from here)
     finished_at   TEXT    NOT NULL,     -- when it finished or failed
     status        TEXT    NOT NULL CHECK (status IN ('finished', 'failed')),
-    root          TEXT    NOT NULL,     -- the folder scanned (your ssdPath)
+    root          TEXT    NOT NULL,     -- the folder scanned (your Working SSD, drives.working)
     project_count INTEGER,              -- ranked projects found (empty if the scan failed)
     file_count    INTEGER,              -- files measured
     total_bytes   INTEGER,              -- everything measured: projects + shared folders + loose files
     errors        TEXT    NOT NULL DEFAULT '[]'  -- warnings or the failure, as a JSON list of messages
   );
 
-  -- One row per project folder (and per shared folder), updated by each scan.
+  -- One row per project folder (and per shared folder) on the Working SSD,
+  -- updated by each scan.
   CREATE TABLE projects (
     id                 INTEGER PRIMARY KEY,
     path               TEXT    NOT NULL UNIQUE,  -- from the top of the SSD, e.g. 'NCHS Football/Week 1'.
@@ -80,8 +81,10 @@ const MIGRATIONS = [
     last_modified_file TEXT,                     -- ... and which file, to check in Finder
     last_nle_save      TEXT,                     -- last save of a .drp/.prproj/... in the folder
     last_nle_save_file TEXT,
-    has_export         INTEGER NOT NULL CHECK (has_export IN (0, 1)),
+    has_export         INTEGER NOT NULL CHECK (has_export IN (0, 1)),          -- any export, drafts included
     export_file        TEXT,                     -- the file that made has_export = 1
+    has_final_export   INTEGER NOT NULL CHECK (has_final_export IN (0, 1)),    -- a video named "Final"/"FD": finished
+    final_export_file  TEXT,                     -- the file that made has_final_export = 1
     future_dated_files INTEGER NOT NULL DEFAULT 0,                             -- files with impossible future dates
     incomplete         INTEGER NOT NULL DEFAULT 0 CHECK (incomplete IN (0, 1)),  -- some folders couldn't be read
     score              REAL,                     -- 0-100 (empty for shared folders)
@@ -90,18 +93,20 @@ const MIGRATIONS = [
     pinned_keep        INTEGER NOT NULL DEFAULT 0 CHECK (pinned_keep IN (0, 1)),  -- your pin (npm run pin); scans never change it
     first_seen         TEXT    NOT NULL,         -- first scan that found it
     last_scanned       TEXT    NOT NULL,         -- latest scan that found it
-    missing            INTEGER NOT NULL DEFAULT 0 CHECK (missing IN (0, 1))       -- 1 = not found by the latest scan
+    missing            INTEGER NOT NULL DEFAULT 0 CHECK (missing IN (0, 1))       -- 1 = no longer on the Working SSD
   );
 
-  -- One row per offload (Phase 4). Empty until then.
+  -- One row per move of a project to another drive (Phase 4): Working SSD →
+  -- Library, later Library → Archive. Together the rows are each project's
+  -- trail of "hops", so any project can be found. Empty until then.
   CREATE TABLE archive_log (
-    id              INTEGER PRIMARY KEY,
-    archived_at     TEXT    NOT NULL,
-    project_id      INTEGER NOT NULL REFERENCES projects (id),  -- "foreign key": must be a real projects row
-    project_path    TEXT    NOT NULL,  -- copy of the path at the time, so the log reads on its own
-    destination     TEXT    NOT NULL,  -- archive drive or folder
-    size_bytes      INTEGER,
-    checksum_result TEXT               -- Vericopy's verification result
+    id                INTEGER PRIMARY KEY,
+    archived_at       TEXT    NOT NULL,  -- when the move finished
+    project_id        INTEGER NOT NULL REFERENCES projects (id),  -- "foreign key": must be a real projects row
+    project_path      TEXT    NOT NULL,  -- copy of the path at the time, so the log reads on its own
+    destination_drive TEXT    NOT NULL CHECK (destination_drive IN ('library', 'archive')),  -- drives.* in config
+    size_bytes        INTEGER,
+    checksum_result   TEXT               -- Vericopy's verification result
   );
   `,
 ];
@@ -252,6 +257,8 @@ function rowToProject(row) {
     lastProjectSaveFile: row.last_nle_save_file,
     hasExport: row.has_export === 1,
     exportExampleFile: row.export_file,
+    hasFinalExport: row.has_final_export === 1,
+    finalExportFile: row.final_export_file,
     futureDatedFiles: row.future_dated_files,
     incomplete: row.incomplete === 1,
     pinnedInDatabase: row.pinned_keep === 1,
@@ -288,6 +295,8 @@ function factsToRow(facts, scannedAtIso) {
     last_nle_save_file: facts.lastProjectSaveFile,
     has_export: facts.hasExport ? 1 : 0,
     export_file: facts.exportExampleFile,
+    has_final_export: facts.hasFinalExport ? 1 : 0,
+    final_export_file: facts.finalExportFile,
     future_dated_files: facts.futureDatedFiles,
     incomplete: facts.incomplete ? 1 : 0,
     scanned_at: scannedAtIso,
@@ -310,13 +319,13 @@ const UPSERT_PROJECT_SQL = `
     path, name, kind, client,
     size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes, project_bytes, other_bytes,
     file_count, last_modified, last_modified_file, last_nle_save, last_nle_save_file,
-    has_export, export_file, future_dated_files, incomplete,
+    has_export, export_file, has_final_export, final_export_file, future_dated_files, incomplete,
     first_seen, last_scanned, missing
   ) VALUES (
     @path, @name, @kind, @client,
     @size_bytes, @raw_bytes, @proxy_bytes, @export_bytes, @cache_bytes, @project_bytes, @other_bytes,
     @file_count, @last_modified, @last_modified_file, @last_nle_save, @last_nle_save_file,
-    @has_export, @export_file, @future_dated_files, @incomplete,
+    @has_export, @export_file, @has_final_export, @final_export_file, @future_dated_files, @incomplete,
     @scanned_at, @scanned_at, 0
   )
   ON CONFLICT (path) DO UPDATE SET
@@ -337,6 +346,8 @@ const UPSERT_PROJECT_SQL = `
     last_nle_save_file = excluded.last_nle_save_file,
     has_export = excluded.has_export,
     export_file = excluded.export_file,
+    has_final_export = excluded.has_final_export,
+    final_export_file = excluded.final_export_file,
     future_dated_files = excluded.future_dated_files,
     incomplete = excluded.incomplete,
     score = NULL,
@@ -360,16 +371,16 @@ function scanMessages(scan) {
   return messages;
 }
 
-// Saves one full scan of the SSD (the result of scanDrive) and re-scores.
+// Saves one full scan of the Working SSD (the result of scanDrive) and re-scores.
 // All of it happens in one transaction: if anything fails partway, SQLite
 // undoes the whole save, so the database never holds half a scan.
 //
 // Returns { scanId, projects (scored, with pins), added, updated, returned, markedMissing }.
 function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
-  // A --root scan only saw part of the SSD. Saving it would mark every
-  // project outside that folder as missing, so it's refused.
-  if (scan.scope !== 'ssd') {
-    throw new Error('Only full scans of the SSD can be saved (this scan covered one folder with --root).');
+  // A --root scan only saw one folder (or another drive). Saving it would
+  // mark every project it didn't see as missing, so it's refused.
+  if (scan.scope !== 'working') {
+    throw new Error('Only full scans of the Working SSD can be saved (this scan covered one folder or another drive).');
   }
   const scannedAtIso = toIso(scan.scannedAt);
   const findExisting = db.prepare('SELECT missing FROM projects WHERE path = ?');
@@ -428,7 +439,7 @@ function recordFailedScan(db, { root, startedAt, finishedAt = Date.now(), error 
 
 // --- Scoring what's saved ----------------------------------------------------
 
-// Re-scores every ranked project still on the SSD, from the facts saved in the
+// Re-scores every ranked project still on the Working SSD, from the facts saved in the
 // database, and saves the new scores. Pins count from both places:
 //   pinned_keep (npm run pin)  OR  folders.keepPinned in config.json.
 // `now` is the time file ages are measured from: the last scan's start, so

@@ -52,6 +52,16 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// The three drives in the workflow, in the order projects travel:
+//   working (2TB SSD: cards land here, editing happens here)
+//   → library (2TB HDD: finished, recent projects)
+//   → archive (28TB HDD: everything older, once the library fills up)
+const DRIVE_LABELS = {
+  working: 'Working SSD',
+  library: 'Library HDD',
+  archive: 'Archive HDD',
+};
+
 // Combines two settings objects. Nested sections ("weights", "folders", ...)
 // are merged key by key; lists and single values from `overrides` replace the
 // default entirely.
@@ -72,11 +82,30 @@ function isStringList(value) {
 function validateConfig(config) {
   const problems = [];
 
-  if (typeof config.ssdPath !== 'string' || config.ssdPath.trim() === '') {
-    problems.push('"ssdPath" must be the path to your SSD, e.g. "/Volumes/BRIGSMEDIA".');
+  // Older settings files used "ssdPath" / "archivePath" before there were three drives.
+  for (const oldName of ['ssdPath', 'archivePath']) {
+    if (oldName in config) {
+      problems.push(
+        `"${oldName}" was replaced by the "drives" section. Remove it and set ` +
+          '"drives": { "working": "/Volumes/BRIGSMEDIA", "library": "...", "archive": "..." } instead.',
+      );
+    }
   }
-  if (typeof config.archivePath !== 'string') {
-    problems.push('"archivePath" must be text (use "" until you set up archive storage).');
+  const drives = config.drives || {};
+  if (typeof drives.working !== 'string' || drives.working.trim() === '') {
+    problems.push('"drives.working" must be the path to your working SSD, e.g. "/Volumes/BRIGSMEDIA".');
+  }
+  for (const name of ['library', 'archive']) {
+    if (typeof drives[name] !== 'string') {
+      problems.push(`"drives.${name}" must be a path in quotes (or "" if you don't have that drive).`);
+    }
+  }
+
+  const full = config.libraryFull || {};
+  if (!Number.isFinite(full.startAtPercent) || full.startAtPercent <= 0 || full.startAtPercent > 100) {
+    problems.push('"libraryFull.startAtPercent" must be a percentage between 1 and 100, e.g. 90.');
+  } else if (!Number.isFinite(full.targetPercent) || full.targetPercent < 0 || full.targetPercent >= full.startAtPercent) {
+    problems.push('"libraryFull.targetPercent" must be a percentage smaller than "startAtPercent", e.g. 70.');
   }
 
   const weights = config.weights || {};
@@ -99,8 +128,8 @@ function validateConfig(config) {
   }
 
   const buckets = config.buckets || {};
-  if (!Number.isFinite(buckets.ready) || !Number.isFinite(buckets.review) || buckets.ready <= buckets.review) {
-    problems.push('"buckets.ready" and "buckets.review" must be numbers, with ready bigger than review.');
+  if (!Number.isFinite(buckets.review) || buckets.review < 0 || buckets.review > 100) {
+    problems.push('"buckets.review" must be a score between 0 and 100, e.g. 40.');
   }
 
   if (!isStringList(config.doneStatuses)) {
@@ -165,30 +194,50 @@ function isInside(child, parent) {
   );
 }
 
-// SAFETY: refuses to run if this app lives on the SSD it scans. If it did, the
-// app's data/ folder (the one place it writes) would be on the SSD, and the
-// scan would include the app's own files as a "project".
-function assertSafeLocations(config) {
-  const ssd = canonicalPath(config.ssdPath);
-  if (isInside(canonicalPath(ROOT_DIR), ssd)) {
+// The drives that have a path set, as [name, path] pairs.
+function configuredDrives(config) {
+  return Object.keys(DRIVE_LABELS)
+    .map((name) => [name, config.drives[name]])
+    .filter(([, drivePath]) => typeof drivePath === 'string' && drivePath.trim() !== '');
+}
+
+// SAFETY: refuses to run if this app lives inside a folder it would scan. If
+// it did, the app's data/ folder (the one place it writes) would be on that
+// drive, and the scan would include the app's own files as a "project".
+function assertAppNotInside(folder, label = folder) {
+  if (isInside(canonicalPath(ROOT_DIR), canonicalPath(folder))) {
     throw new ConfigError(
-      `This app is stored on the drive it scans (${config.ssdPath}).\n` +
-        'The app must never write to the SSD, so move the app folder somewhere else first ' +
+      `This app is stored inside ${label} (${folder}).\n` +
+        'The app must never write to your media drives, so move the app folder somewhere else first ' +
         '(for example ~/Code/SSD-Dashboard) and run it from there.',
     );
   }
-  // canonicalPath follows shortcuts, so this catches a data/ folder that is
-  // really a shortcut (symlink) to a folder on the SSD.
-  if (isInside(canonicalPath(DATA_DIR), ssd)) {
+  // canonicalPath follows shortcuts, so this also catches a data/ folder that
+  // is really a shortcut (symlink) into this folder. The database lives in
+  // data/, so it must never end up on a media drive.
+  if (isInside(canonicalPath(DATA_DIR), canonicalPath(folder))) {
     throw new ConfigError(
-      `The app's data/ folder leads onto the drive it scans (${config.ssdPath}).\n` +
-        'The database must never be written to the SSD. Make data/ a normal folder inside the app folder.',
+      `The app's data/ folder leads into ${label} (${folder}).\n` +
+        'The database must never be written to your media drives. Make data/ a normal folder inside the app folder.',
     );
   }
-  if (config.archivePath.trim() !== '') {
-    const archive = canonicalPath(config.archivePath);
-    if (isInside(archive, ssd) || isInside(ssd, archive)) {
-      throw new ConfigError('"archivePath" and "ssdPath" overlap. Your archive must be a separate place from your working SSD.');
+}
+
+// SAFETY: the app must not live on any of the three drives, and the drives
+// must be three separate places (otherwise "move to the library" could mean
+// "move onto itself").
+function assertSafeLocations(config) {
+  const drives = configuredDrives(config);
+  for (const [name, drivePath] of drives) {
+    assertAppNotInside(drivePath, `your ${DRIVE_LABELS[name]}`);
+  }
+  for (const [nameA, pathA] of drives) {
+    for (const [nameB, pathB] of drives) {
+      if (nameA < nameB && (isInside(canonicalPath(pathA), canonicalPath(pathB)) || isInside(canonicalPath(pathB), canonicalPath(pathA)))) {
+        throw new ConfigError(
+          `"drives.${nameA}" and "drives.${nameB}" overlap (${pathA} / ${pathB}). Each drive must be a separate place.`,
+        );
+      }
     }
   }
 }
@@ -196,7 +245,10 @@ function assertSafeLocations(config) {
 module.exports = {
   ROOT_DIR,
   DATA_DIR,
+  DRIVE_LABELS,
   ConfigError,
+  configuredDrives,
+  assertAppNotInside,
   loadConfig,
   withDefaults,
   validateConfig,
