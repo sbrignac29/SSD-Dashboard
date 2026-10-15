@@ -152,3 +152,60 @@ test('the guard allows read-only code and plain comments', () => {
     assert.deepEqual(findProblems(code), [], `should be allowed: ${code}`);
   }
 });
+
+// --- Notion is read-only ------------------------------------------------------
+//
+// Phase 4 only READS Notion. The integration you made in Notion has only
+// "Read content" ticked (that's the real lock: Notion itself refuses anything
+// else), and this test is the second lock: the only Notion calls in src/ are
+// the two read calls in src/notion/sync.js, and only that file loads the
+// Notion library.
+
+const NOTION_AREAS = ['pages', 'blocks', 'databases', 'dataSources', 'comments', 'users', 'fileUploads', 'oauth', 'views'];
+const NOTION_READS = ['dataSources.retrieve', 'dataSources.query'];
+
+function notionCalls(code) {
+  const found = [];
+  const lines = stripComments(code).split('\n');
+  for (const line of lines) {
+    // client.dataSources.query  /  notion.pages.update  /  x.blocks.children.append
+    // (but not the spread "...pages.map(...)": a list called pages, not Notion)
+    for (const m of line.matchAll(new RegExp(`(?<!\\.)\\.\\s*(${NOTION_AREAS.join('|')})\\s*\\.\\s*(\\w+)`, 'g'))) {
+      found.push(`${m[1]}.${m[2]}`);
+    }
+    // The library's catch-alls: client.request(...) and client.search(...)
+    for (const m of line.matchAll(/\.\s*(request|search)\s*\(/g)) found.push(m[1]);
+  }
+  return found;
+}
+
+test('src/ only ever reads Notion: no Notion call but the two read calls', () => {
+  const problems = [];
+  for (const file of listCodeFiles(SRC_DIR)) {
+    const relative = path.relative(SRC_DIR, file);
+    const code = fs.readFileSync(file, 'utf8');
+    for (const call of notionCalls(code)) {
+      if (!(relative === path.join('notion', 'sync.js') && NOTION_READS.includes(call))) problems.push(`${relative}: ${call}`);
+    }
+    if (/@notionhq\/client/.test(stripComments(code)) && relative !== path.join('notion', 'sync.js')) {
+      problems.push(`${relative}: loads @notionhq/client (only notion/sync.js may)`);
+    }
+  }
+  assert.deepEqual(problems, [], `Notion must only be read:\n${problems.join('\n')}`);
+});
+
+test('the Notion guard catches calls that would change Notion', () => {
+  const sneaky = [
+    "await client.pages.update({ page_id: id, properties: {} })",
+    "notion.blocks.children.append({ block_id: id, children: [] })",
+    "client.comments.create({ parent: { page_id: id } })",
+    "client.dataSources.update({ data_source_id: id })",
+    "client.databases.create({})",
+    "client.request({ path: 'pages', method: 'post' })",
+  ];
+  for (const code of sneaky) {
+    assert.ok(notionCalls(code).some((call) => !NOTION_READS.includes(call)), `should have been caught: ${code}`);
+  }
+  assert.deepEqual(notionCalls("client.dataSources.query({ data_source_id: id })"), ['dataSources.query']);
+  assert.deepEqual(notionCalls('const all = [...pages.map((p) => p.title)]'), [], 'a spread list is not Notion');
+});

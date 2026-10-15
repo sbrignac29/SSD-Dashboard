@@ -27,7 +27,15 @@
   "buckets": {
     "review": 40
   },
-  "doneStatuses": ["Complete", "Delivered"],
+  "doneStatuses": ["Done"],
+
+  "notion": {
+    "token": "",
+    "dataSourceId": "233517a5-0199-8028-a552-000b7d81cc6b",
+    "titleProperty": "Project name",
+    "statusProperty": "Status",
+    "endDateProperty": "End date"
+  },
 
   "folders": {
     "ignore": ["$RECYCLE.BIN", "System Volume Information"],

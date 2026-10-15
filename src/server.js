@@ -17,6 +17,10 @@
 //   GET  /api/library            the Done HDD page: Library projects + the Archive move list
 //   POST /api/scan               scan the connected drives now (answers at once; the scan keeps going)
 //   GET  /api/scan               how far the scan is (the page asks twice a second)
+//   GET  /api/notion             "Notion: connected / not connected", last sync, link counts
+//   POST /api/notion/sync        the Refresh Notion button: read the Projects board now
+//   GET  /api/notion/links       the Link to Notion page: folders + suggested Notion pages
+//   POST /api/notion/links       Confirm / No Notion page / undo, for one or more folders
 //
 // (":id" is a placeholder: /api/projects/12 runs the same route with id = 12.)
 // Everything else is a file from public/: the pages, their JavaScript and CSS.
@@ -27,20 +31,23 @@
 // touches the drives or the database itself; it can only ask the server.
 //
 // SAFETY (see CLAUDE.md): the server only READS the drives (scans, and statfs
-// for free space) and only WRITES to data/ (the database: scans and pins).
-// Starting it never scans anything; only the Scan now button does (or the
-// nightly scan, if you turn it on in config.json: server.nightlyScan).
+// for free space) and only WRITES to data/ (the database: scans, pins, Notion
+// links). It only READS Notion (src/notion/sync.js), and only when you press
+// Refresh Notion or Scan now. Starting it never scans or syncs anything; only
+// the Scan now button does (or the nightly scan, if you turn it on in
+// config.json: server.nightlyScan — it never syncs Notion).
 
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
-const { ROOT_DIR, loadConfig, assertSafeLocations, ConfigError } = require('./config');
-const { openDatabase, describeDatabaseError, togglePinById, displayPath } = require('./db');
+const { ROOT_DIR, loadConfig, assertSafeLocations, notionSettings, ConfigError } = require('./config');
+const { openDatabase, describeDatabaseError, togglePinById, setNotionLinks, displayPath } = require('./db');
 const { allDriveSpace } = require('./scanner/space');
 const { ScanError } = require('./scanner/scan');
 const { scheduleNightlyScan } = require('./jobs/nightly');
 const views = require('./web/views');
 const { createScanRunner } = require('./web/scanRunner');
+const { createNotionSyncer } = require('./notion/sync');
 
 // Express is installed by `npm install`. If it's missing (e.g. right after
 // pulling this update), say so plainly instead of crashing.
@@ -95,19 +102,43 @@ function readId(text) {
   return Number(text);
 }
 
+// The body of POST /api/notion/links: { projectIds: [12], action, pageId? }.
+function readLinkRequest(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new views.RequestError(400, 'Send { "projectIds": [...], "action": "confirm" | "none" | "clear", "pageId": "..." }.');
+  }
+  const { projectIds, action, pageId } = body;
+  if (!Array.isArray(projectIds) || projectIds.length > 1000) {
+    throw new views.RequestError(400, '"projectIds" must be a list of project ids.');
+  }
+  return { projectIds, action, pageId: pageId ?? null };
+}
+
 // Builds the Express app (without starting it, so tests can run it on any port).
 //   db         – the open database
 //   runner     – the scan runner (web/scanRunner.js)
+//   notion     – the Notion syncer (notion/sync.js); one is made if not given
 //   getConfig  – returns the current settings; re-read for every request, so
 //                edits to config.json show up without restarting
 //   getSpaces  – how full each drive is (tests pass fake numbers)
 //   localOnly  – turn the localhost guard on (off for phone access)
-function createApp({ db, runner, getConfig = () => loadConfig().config, getSpaces = allDriveSpace, localOnly = true }) {
+function createApp({
+  db,
+  runner,
+  notion,
+  getConfig = () => loadConfig().config,
+  getSpaces = allDriveSpace,
+  localOnly = true,
+}) {
   if (!express) throw new ConfigError(NPM_INSTALL_ADVICE);
+  const syncer = notion ?? createNotionSyncer({ db, getConfig });
   const app = express();
   app.disable('x-powered-by');
   if (localOnly) app.use(onlyLocalhost);
   app.use(postsMustBeJson);
+  // Turns a POST's JSON body into req.body (the Link buttons send which page).
+  // Small requests only: nothing the dashboard sends is bigger.
+  app.use(express.json({ limit: '50kb' }));
   // API answers are always fresh: tell the browser not to keep old copies.
   app.use('/api', (req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -157,6 +188,33 @@ function createApp({ db, runner, getConfig = () => loadConfig().config, getSpace
     res.status(outcome.started ? 202 : 200).json({ ...outcome.status, started: outcome.started, reason: outcome.reason ?? null });
   });
 
+  app.get('/api/notion', (req, res) => {
+    res.json(views.notionView({ db, config: getConfig(), syncing: syncer.isRunning() }));
+  });
+
+  app.post('/api/notion/sync', async (req, res) => {
+    // Waits for the sync (a few seconds at most). Notion problems aren't
+    // errors here: `ok: false` and the message say what's wrong, and the
+    // dashboard keeps using the last synced statuses.
+    const outcome = await syncer.sync({ triggeredBy: 'button' });
+    res.json({ ...outcome, notion: views.notionView({ db, config: getConfig(), syncing: syncer.isRunning() }) });
+  });
+
+  app.get('/api/notion/links', (req, res) => {
+    res.json(views.notionLinksView({ db, config: getConfig(), query: req.query, syncing: syncer.isRunning() }));
+  });
+
+  app.post('/api/notion/links', (req, res) => {
+    const config = getConfig();
+    // SAFETY: saving a link writes to the database, so the same checks as a pin.
+    assertSafeLocations(config);
+    const request = readLinkRequest(req.body);
+    const outcome = setNotionLinks(db, config, request);
+    const answer = views.notionLinkResultView(outcome, { action: request.action, count: new Set(request.projectIds).size });
+    const status = { ok: 200, 'not-found': 404, 'unknown-page': 409 }[outcome.result] ?? 400;
+    res.status(status).json(answer);
+  });
+
   app.get('/vendor/:file', (req, res, next) => {
     const file = VENDOR_FILES.get(req.params.file);
     if (!file) return next();
@@ -176,6 +234,11 @@ function createApp({ db, runner, getConfig = () => loadConfig().config, getSpace
   app.use((error, req, res, next) => {
     if (error instanceof views.RequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    // From express.json(): a body that isn't valid JSON, or is too big.
+    if (error.type === 'entity.parse.failed' || error.type === 'entity.too.large') {
+      res.status(error.status).json({ error: "The request's JSON couldn't be read." });
       return;
     }
     const plain = error instanceof ConfigError || error instanceof ScanError ? error.message : describeDatabaseError(error);
@@ -214,9 +277,12 @@ function main() {
   // Opens (or creates) data/dashboard.db and upgrades its layout if needed.
   // This is not a scan: nothing on any drive is read yet.
   const db = openDatabase();
-  const runner = createScanRunner({ db, getConfig: () => loadConfig().config });
+  const getConfig = () => loadConfig().config;
+  // Reads Notion only when asked (Refresh Notion, or Scan now).
+  const notion = createNotionSyncer({ db, getConfig });
+  const runner = createScanRunner({ db, getConfig, notion });
   const { port, host, nightlyScan } = config.server;
-  const app = createApp({ db, runner, localOnly: isLoopback(host) });
+  const app = createApp({ db, runner, notion, getConfig, localOnly: isLoopback(host) });
   const server = http.createServer(app);
 
   server.on('error', (error) => {
@@ -243,6 +309,11 @@ function main() {
       console.log(`  On your phone (same Wi-Fi): http://<this Mac's name>.local:${port}`);
     }
     console.log('  Nothing is scanned until you press "Scan now".');
+    console.log(
+      notionSettings(config).configured
+        ? '  Notion: read when you press "Refresh Notion" or "Scan now" (never on its own).'
+        : '  Notion: not connected (no notion.token in config.json yet; see the README).',
+    );
     console.log(
       nightlyScan
         ? '  Nightly scan: on, at 2:00 AM while this Terminal window keeps running (server.nightlyScan in config.json).'

@@ -21,11 +21,15 @@ SSD's projects for Move 1 and shows how full each drive is.
 **Phase 2 (done):** scan results are saved in a database (`data/dashboard.db`),
 so `npm run report` shows them instantly without rescanning, and
 `npm run pin` marks projects you want to keep.
-**Phase 3 (now):** a dashboard in your browser: `npm start`, then open
+**Phase 3 (done):** a dashboard in your browser: `npm start`, then open
 <http://localhost:7744>. One **Scan now** button, plain-language tags, your
 drives (plugged in or not), each project's score explained, and the Done HDD
 page with the Library → Archive list for Move 2. See section 4.
-**Next:** Notion status (Phase 4), then moving projects with Vericopy (Phase 5).
+**Phase 4 (now):** your Notion **Projects** board: a project marked **Done**
+there counts as finished. You link each folder to its Notion page once (the app
+suggests, you confirm), and the Status column shows its Notion status. The app
+only reads Notion. See section 5.
+**Next:** moving projects with Vericopy (Phase 5).
 
 > **Safety promise.** This app only ever *reads* your drives. It never deletes,
 > moves, renames, or writes anything on the Working SSD, the Library, or the
@@ -95,10 +99,11 @@ cp config.example.json config.json
   work) and **chart.js** (draws the size chart). The server hands those two to
   your browser itself, so the dashboard works without internet. better-sqlite3
   includes ready-made versions for Apple Silicon and Intel Macs, so nothing
-  needs to be compiled. Run `npm install` again whenever you pull an update that
-  changes `package.json`.
+  needs to be compiled. **@notionhq/client** is Notion's official library for
+  reading your Projects board (Phase 4). Run `npm install` again whenever you
+  pull an update that changes `package.json`.
 - `cp` copies the example settings into **your own** `config.json`. Git ignores
-  that file, so your paths (and later, your Notion key) never get uploaded.
+  that file, so your paths and your Notion token never get uploaded.
 
 The example settings already have your three drives. Open `config.json` in a
 code editor (like VS Code) if you want to change anything. If you use TextEdit,
@@ -122,6 +127,7 @@ Then open **<http://localhost:7744>** in Safari or Chrome. Terminal shows:
 SSD Offload Dashboard is running.
   Open http://localhost:7744 in your browser.
   Nothing is scanned until you press "Scan now".
+  Notion: read when you press "Refresh Notion" or "Scan now" (never on its own).
   Nightly scan: off (turn on with "nightlyScan": true under "server" in config.json).
   Settings: config.json · Database: data/dashboard.db
   Press Ctrl+C to stop.
@@ -162,13 +168,14 @@ From top to bottom:
 
   Under each tag, the main reason ("Edited recently — can be ready Oct 24",
   "Has footage newer than its final export"). These are the same as the
-  report's buckets (Ready / Review / Keep), in plain words. **Status** shows
-  "—" until Notion is connected (Phase 4).
+  report's buckets (Ready / Review / Keep), in plain words. **Status** is the
+  linked Notion page's status ("—" if the folder isn't linked; see section 5).
   - Click a **column header** to sort by it (again to reverse). The tag column
     sorts Ready first, biggest first, then Check first and Keep by score.
   - **Filters:** the tag buttons (each shows how many projects it has), the
-    client (container folders like *NCHS Football*), and a *Last edited* date
-    range. The filters stay in the address bar, so the Back button keeps them.
+    client (container folders like *NCHS Football*), a *Last edited* date
+    range, and **Notion** (*Not linked yet*, *No Notion page*, or one status).
+    The filters stay in the address bar, so the Back button keeps them.
   - Click a **project** to open its page.
 - **What's using the space** — a chart of the shown projects by file type (raw
   footage, proxies, cache, exports, …). It follows the filters. *Show the
@@ -178,11 +185,13 @@ From top to bottom:
 
 - The tag and score, in big type.
 - **What it needs to be ready to move** — the checklist the Ready rule uses, each
-  ✓ or ✗ with the details: the final export it found (or why drafts don't count),
+  ✓ or ✗ with the details: **Done in Notion** (its linked page's status and End
+  date), the final export it found (or why drafts don't count),
   when it was last edited and which file, newer footage, future dates, unreadable
   folders, and pins.
 - **How the score adds up** — each part (Done, Age, Size) × its weight = points.
-- **Facts from the last scan**, **Size by file type**, and the **folder tree**:
+- **Facts from the last scan** (including its Notion page, with **Change →**),
+  **Size by file type**, and the **folder tree**:
   its folders, biggest first, three levels deep (click a folder to open it).
 - **Pin as Keep** / **Unpin** — the same as `npm run pin` (only the database
   changes). **Move to HDD** is greyed out: *Coming in Phase 5*.
@@ -244,12 +253,16 @@ database at all. It asks the server for data at addresses that start with
 |---|---|
 | `GET /api/drives` | Each drive: connected or not, used/free space, last scanned |
 | `GET /api/summary` | The headline: space you could free (the Ready projects) |
-| `GET /api/projects` | The project list, sorted by score. Filters: `?tag=ready`, `?client=NCHS Football`, `?from=2026-09-01&to=2026-09-30`, `?drive=library` |
+| `GET /api/projects` | The project list, sorted by score. Filters: `?tag=ready`, `?client=NCHS Football`, `?from=2026-09-01&to=2026-09-30`, `?notion=unlinked`, `?status=Done`, `?drive=library` |
 | `GET /api/projects/12` | Project 12: every scoring signal and its biggest folders |
 | `POST /api/projects/12/pin` | Pin or unpin project 12 |
 | `GET /api/library` | The Done HDD page: Library projects oldest first, and the Archive list |
 | `POST /api/scan` | Scan the connected drives now. It answers at once ("started") and keeps scanning |
 | `GET /api/scan` | How far the scan is. The page asks twice a second while it runs ("polling") |
+| `GET /api/notion` | "Notion: connected / not connected", when it last synced, how many folders are linked |
+| `POST /api/notion/sync` | The Refresh Notion button: read the Projects board now |
+| `GET /api/notion/links` | The Link to Notion page: folders (`?show=todo`, `linked`, `none`) with their top 3 suggestions, and every Notion page |
+| `POST /api/notion/links` | Confirm a link, mark "No Notion page", or undo, for one or more folders (it sends `{"projectIds": [12], "action": "confirm", "pageId": "…"}`) |
 
 `GET` means "give me"; `POST` means "do something". You can open the `GET`
 ones in your browser to see the raw answers, e.g.
@@ -286,13 +299,190 @@ changes.
    it scans only the Library. Eject the Library too and refresh **Done HDD**: it
    shows *Not connected* and the last scan's list and space. **Scan now** with
    both unplugged says to plug one in.
-8. **Dark mode and phone size:** press **Theme** (Auto → Light → Dark). Make the
+8. **Notion:** see section 5 to connect it. Press **Refresh Notion**, link one
+   folder on **Link to Notion**, and open that project: its Notion line and
+   Status column show the page's status.
+9. **Dark mode and phone size:** press **Theme** (Auto → Light → Dark). Make the
    browser window narrow (or Safari: Develop → Enter Responsive Design Mode)
    to see the phone layout.
-9. **Stop:** Ctrl+C in Terminal. Start it again: still no scan until you press
+10. **Stop:** Ctrl+C in Terminal. Start it again: still no scan until you press
    the button.
 
-## 5. Run a scan from Terminal
+## 5. Notion: project statuses (Phase 4)
+
+The dashboard can read your Notion **Projects** board, so a project you've
+marked **Done** in Notion counts as finished, even without a "Final"/"FD"
+export. It only ever **reads** Notion: it never changes a page, a status or
+anything else there.
+
+### What's an API, and what's an API token?
+
+An **API** ("application programming interface") is a way for one program to
+ask another for things, without a person clicking. Notion's API lives at
+`https://api.notion.com`: the dashboard sends it a request ("give me the rows
+of this data source") and Notion answers with JSON, the same kind of
+structured text the dashboard's own server sends your browser.
+
+Notion has to know who's asking and what they're allowed to see. That's the
+**API token**: a long secret string (it starts with `ntn_`) that belongs to an
+**integration**, a "robot user" you create in your Notion workspace. Every
+request carries the token. Notion then:
+
+- only shows the integration the pages you've **shared with it** (here: just
+  the Projects database), and
+- only lets it do what you ticked when you made it (here: **Read content**,
+  nothing else — so even a bug in this app couldn't change your board).
+
+Treat the token like a password: anyone who has it can read whatever you
+shared with the integration. That's why it goes in `config.json`, which git
+never uploads, and why a test (`tests/secrets.test.js`) fails if anything that
+looks like a Notion token is in a file git would commit.
+
+### Database ID or data source ID?
+
+Since Notion's API version **2025-09-03**, a database is a container, and its
+rows live in one or more **data sources** inside it (a database can combine
+several). Rows are read from a data source, so the app needs the **data source
+ID** (`233517a5-0199-8028-a552-000b7d81cc6b` — already in
+`config.example.json`), not the database ID (`233517a5-0199-8055-…`). The
+library the app uses, `@notionhq/client` 5, speaks that version, and the app
+names it explicitly so a library update can't quietly change the format.
+
+### Step 1: create a read-only integration (once)
+
+Notion moves its menus around now and then; if a label differs a little,
+look for the closest match.
+
+1. In your browser, open <https://www.notion.so/profile/integrations> (or in
+   Notion: **Settings → Connections → Develop or manage integrations**).
+2. Click **New integration**. Name it e.g. `SSD Offload Dashboard`, pick the
+   **BrigsMedia** workspace, type **Internal**, and save.
+3. Open its **Configuration** (or Capabilities) settings:
+   - Content capabilities: tick **Read content** only. **Untick** Update
+     content and Insert content.
+   - Comment capabilities: untick both.
+   - User capabilities: **No user information**.
+   - Save.
+4. On the same page, next to **Internal Integration Secret**, click **Show**
+   and **Copy**. That's your token (`ntn_…`).
+
+### Step 2: share only the Projects database with it
+
+An integration sees nothing until you share pages with it.
+
+1. In Notion, open your **Projects** database (as a full page).
+2. Click **•••** (top right) → **Connections** → search for
+   `SSD Offload Dashboard` → **Confirm**.
+3. That's all: only Projects (and pages inside it) are shared. To check, open
+   the integration's **Access** tab on the integrations page: Projects should be
+   the only thing listed. Don't share your whole workspace or a parent page.
+
+### Step 3: put the token in `config.json`
+
+Open `config.json` (your copy, never uploaded) and add, or fill in, the
+`notion` section:
+
+```json
+  "doneStatuses": ["Done"],
+
+  "notion": {
+    "token": "ntn_paste_yours_here",
+    "dataSourceId": "233517a5-0199-8028-a552-000b7d81cc6b",
+    "titleProperty": "Project name",
+    "statusProperty": "Status",
+    "endDateProperty": "End date"
+  },
+```
+
+Mind the commas between sections. No restart needed: the dashboard re-reads
+`config.json` on every page load. (`config.example.json` keeps `"token": ""`.)
+
+### Step 4: Refresh Notion
+
+On the Overview, under **Scan now**, press **Refresh Notion**. The Notion line
+should turn to **● Notion: connected · last synced … · N pages**. If it says
+**Notion: not connected**, the message under it says why (wrong token, the
+database isn't shared, no internet) and what to do — see Troubleshooting.
+
+When Notion is read:
+- **Refresh Notion** (Overview, and the Link to Notion page), and
+- **Scan now** (after the drives).
+
+Never on its own: not when the dashboard starts, and not by the nightly scan.
+
+### Step 5: link your folders (the Link to Notion page)
+
+Notion titles rarely match folder names ("Veterans Video" vs
+`Veteran's Day Video`, "Sparrow POS Photos" vs `Sparrow`), so the app never
+links anything by itself. It **suggests**, and you confirm. Open **Link to
+Notion** in the top bar:
+
+- Each folder that isn't linked yet shows its **top 3 suggested pages**, each
+  with a match percentage. A **likely** match (50%+, in green) is picked in
+  advance; others aren't.
+- Pick a suggestion, or any page from the **Another Notion page…** dropdown,
+  and press **Confirm**.
+- No page for this folder (a football game, a soccer session)? Press **No
+  Notion page**. It won't be suggested again.
+- Made a mistake? **Undo** appears after every action. Linked folders are under
+  **Linked** (and **No Notion page**), each with **Change** and **Back to "not
+  linked yet"**. A project's page also has a **Change →** link.
+- Lots of folders without pages? Pick a container in **Folder** (e.g. *In NCHS
+  Football*): a button marks all the ones **without a likely match** as "No
+  Notion page" in one go. Folders with a likely match (MEDIA DAY) are left for
+  you to confirm.
+
+The list puts the best matches first, so you can confirm the easy ones quickly
+and then deal with the rest.
+
+**How the suggestions work.** Both names are cleaned the same way: dates
+removed (`10-3`, `2026-08-24`), lowercase, apostrophes and punctuation dropped
+(`Veteran's` → `veterans`), filler words dropped (`the`, `and`, `vs`), and a
+plural "s" removed. Then the app compares the **words**. Words that are the same,
+or nearly (`classic`/`classical`, a one-letter typo), count. **Rare words count
+more than common ones**: "Sparrow" appears in one name, "Video" in dozens, so
+sharing "Sparrow" means much more. (This weighting is called IDF, "inverse
+document frequency", a classic search-engine trick.) The percentage mixes how
+much of both names the shared words cover with how much of the shorter name
+they cover, so the one-word folder `Sparrow` still matches "Sparrow POS
+Photos" well. A page already linked to another folder is ranked a bit lower.
+Your four examples all come out on top (tested in `tests/notionMatch.test.js`).
+
+Links are saved in the database, so they **survive every rescan**. Renaming a
+folder is the exception, as with pins: it looks like a new folder, so link it
+again.
+
+### What changes in the score
+
+- **Done = 100** when the linked page's Status is in `doneStatuses` (`["Done"]`
+  for your board; any capitalization).
+- Otherwise (Not started, In progress, no link, or "No Notion page"), the rule
+  is the same as before: **70** for a final export, else **0**.
+- A Done project still has to pass the rest of the Ready checklist (untouched
+  for 14 days, nothing uncertain, not pinned).
+
+Where you see it:
+- **Overview:** the **Status** column shows the Notion status ("—" if not
+  linked), and the **Notion** filter shows *Not linked yet*, *No Notion page*,
+  or one status.
+- **A project's page:** the checklist's **Done in Notion** line (✓ when Done
+  — that's why a project with no final export can be Ready), the Done part of
+  the score ("Done in Notion ("Veterans Video")"), and under Facts its Notion
+  page, status, **End date** as a hint ("Delivered Oct 3, 2026", "Due Oct 20,
+  2026") with a link to open it in Notion. The End date isn't part of the score.
+
+### When Notion can't be reached
+
+No internet, a wrong token, Notion down: the dashboard keeps working with the
+**last synced statuses** (they're saved in the database) and says so plainly:
+**Notion: not connected**, the reason, and "Using the statuses from the last
+sync …". Scan now still scans and saves the drives. Press Refresh Notion once
+it's fixed.
+
+A page deleted in Notion (or no longer shared) keeps its last status on the
+linked project, and the project page says it wasn't in the last sync.
+
+## 6. Run a scan from Terminal
 
 ```
 npm run scan
@@ -311,7 +501,7 @@ All the commands:
 | `npm run scan` | Scan the Working SSD, save to the database, and print the ranked table, drive space, and move plan |
 | `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, which export counted, and the score math |
 | `npm run report` | Print the saved results from the database, **without scanning**. Instant, and works with the SSD unplugged |
-| `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 8) |
+| `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 9) |
 | `npm run pin` | List the pinned projects |
 | `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder of shoots (its subfolders are treated as projects) as a quick preview. Use it on a container like `NCHS Football` or on a whole drive — pointed at a single project folder, it would list that project's Footage/Exports subfolders as if they were separate projects. **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
 | `npm run scan -- --root "/Volumes/BRIGSMEDIA LIBRARY"` | Peek at what's on the Library. **Not saved** (its buckets still describe Move 1). The dashboard's Scan now saves the Library properly, for the Done HDD page |
@@ -334,7 +524,7 @@ runs only with `npm start` running and `"nightlyScan": true` under `"server"` in
 `config.json`. Otherwise the database updates when you press Scan now or run
 `npm run scan`.
 
-## 6. Reading the report
+## 7. Reading the report
 
 **Projects table** — Ready projects first (biggest first, because moving those
 frees the most space), then Review, then Keep (highest score first):
@@ -343,8 +533,8 @@ frees the most space), then Review, then Keep (highest score first):
 |---|---|
 | Size (GB) | Total size of the project folder, in the same units Finder uses |
 | Last edited | Date of the newest file in the project (hidden system files like `.DS_Store` don't count — Finder rewrites those just from browsing) |
-| Export | **final** — the project is finished: there's a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`) or saved in a final-exports folder (`Final Exports/`, `Exports/FD/`). **draft** — there are exports, but none that say final, so it may still be in revisions. **no** — no exports found. See section 7 for the details |
-| Score | 0–100: how good a candidate it is (see section 7). Orders Review and Keep |
+| Export | **final** — the project is finished: there's a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`) or saved in a final-exports folder (`Final Exports/`, `Exports/FD/`). **draft** — there are exports, but none that say final, so it may still be in revisions. **no** — no exports found. See section 8 for the details |
+| Score | 0–100: how good a candidate it is (see section 8). Orders Review and Keep |
 | Bucket | **Ready** — finished (final export) and untouched for 14+ days: move it to the Library. **Review** — finished but not safe to move yet (see Notes), or unfinished but old and big. **Keep** — unfinished, or pinned |
 
 Below the table:
@@ -380,7 +570,7 @@ Its Drives and Move plan sections use how full the drives are right now, with
 the Ready projects from the last scan. It doesn't list loose files or skipped
 items (those aren't saved); run `npm run scan` for those.
 
-## 7. When is a project Ready?
+## 8. When is a project Ready?
 
 **Ready = finished + untouched for 14 days + nothing uncertain.**
 
@@ -407,7 +597,8 @@ items (those aren't saved); run `npm run scan` for those.
     (`fileTypes.notFinalWords`), including anything in a `Drafts` folder;
   - long numbers and random IDs that phones put in file names.
 
-  Later, Notion status (Complete/Delivered) will count as finished too.
+  A folder linked to a Notion page whose Status is **Done** is finished too,
+  final export or not (section 5).
 - **Untouched for 14 days** means no file in the project changed in that time.
 - **No newer footage:** if there's a video (or, for photo shoots, a photo)
   more than a day *newer* than the final export — say, Game 2 in a folder where
@@ -427,8 +618,9 @@ items (those aren't saved); run `npm run scan` for those.
 Score = 0.45 × Done + 0.35 × Age + 0.20 × Size        (each part 0–100)
 ```
 
-- **Done:** 100 if Notion says Complete/Delivered (later phase), 70 if there's a
-  final export, otherwise 0.
+- **Done:** 100 if the linked Notion page says **Done** (`doneStatuses`), otherwise
+  70 if there's a final export, otherwise 0. Folders not linked to Notion use
+  the export rule.
 - **Age:** 0 if edited in the last 14 days, then rising evenly to 100 at 120 days.
 - **Size:** the project's size as a percentage of the biggest project in the scan.
 
@@ -442,7 +634,7 @@ Example: final export (70), last edited 67 days ago (halfway from 14 to 120 →
 `0.45×70 + 0.35×50 + 0.20×50 = 31.5 + 17.5 + 10 = 59` — and it's **Ready**,
 because it's finished and untouched for 14+ days.
 
-## 8. Pinning projects (always Keep)
+## 9. Pinning projects (always Keep)
 
 Some projects should stay on the Working SSD however finished they look: a
 client who comes back for re-edits, your reel, a template project. Pin them:
@@ -478,7 +670,7 @@ the case.
 **Renamed a pinned folder?** A rename looks like a new project to the app (the
 old name is marked missing), so pin it again under its new name.
 
-## 9. The database: open it yourself
+## 10. The database: open it yourself
 
 All saved results live in one file: **`data/dashboard.db`** inside the app
 folder (e.g. `~/Code/SSD-Dashboard/data/dashboard.db`). It's an **SQLite**
@@ -576,7 +768,7 @@ Working SSD, and on the Library HDD, updated by every scan of that drive.
 | `path` | Where the folder is, from the top of the drive (`NCHS Football/Week 1`). Unique per drive: a rescan updates this row instead of adding another. A project moved to the Library has two rows: its old SSD row (missing) and its Library row |
 | `name` | Name as the report shows it (`NCHS Football / Week 1`) |
 | `kind` | `project` (ranked) or `shared` (measured, never ranked) |
-| `client` | The container for container shoots (`NCHS Football`); empty for others until Notion sync (Phase 4) |
+| `client` | The container for container shoots (`NCHS Football`); empty for others |
 | `size_bytes` | Total size |
 | `raw_bytes` … `other_bytes` | Size by type: raw, proxy, export, cache, project, other |
 | `file_count` | Number of files |
@@ -592,12 +784,26 @@ Working SSD, and on the Library HDD, updated by every scan of that drive.
 | `first_seen` | The first scan that found it |
 | `last_scanned` | The latest scan that found it |
 | `missing` | 1 = the latest scan of its drive didn't find it there. The row is kept for history |
+| `link_source` | Your Notion decision: `confirmed` (linked), `none` ("No Notion page"), or empty (not decided yet). Scans never change it |
+| `notion_page_id` | The linked Notion page (a row in `notion_pages`) |
+| `notion_title`, `notion_status`, `notion_end_date`, `notion_synced_at` | That page's title, Status (the score reads this) and End date, as of the last sync |
+| `link_decided_at` | When you pressed Confirm or No Notion page |
 
 **`scans`**: one row per scan: `started_at`, `finished_at`, `status`
 (`finished` or `failed`), `drive` (`working` or `library`), `root` (the folder
 scanned), `project_count`, `file_count`, `total_bytes`, `errors` (the warnings,
 or why it failed, as a JSON list), and `drive_total_bytes` / `drive_free_bytes`
 (how full the drive was, so the dashboard can show it while it's unplugged).
+
+**`notion_pages`**: one row per page on your Notion Projects board, as of the
+last sync: `page_id`, `title`, `status`, `end_date`, `url`, `last_edited`,
+`first_seen`, `last_synced`, and `in_last_sync` (0 = deleted in Notion, or no
+longer shared). Rows are never deleted, so links keep their page.
+
+**`notion_syncs`**: one row per Refresh Notion (or Scan now's sync):
+`started_at`, `finished_at`, `status` (`finished` or `failed`), `triggered_by`
+(`button` or `scan`), `data_source_id`, `page_count`, and `error` (why it
+failed, in plain words).
 
 **`archive_log`**: empty for now. When moving projects arrives (Phase 5) it
 gets one row per move: `archived_at`, `project_id` (points at the `projects`
@@ -623,7 +829,7 @@ to leave.
   the next `npm start` or `npm run scan` makes a new one. You lose your pins,
   the scan history, and the "no longer on the Working SSD" list.
 
-## 10. Settings (`config.json`)
+## 11. Settings (`config.json`)
 
 | Setting | What it does |
 |---|---|
@@ -638,11 +844,14 @@ to leave.
 | `ageDays.recent` / `ageDays.max` | The 14-day "still being worked on" window and the 120-day "fully old" point |
 | `weights` | The 0.45 / 0.35 / 0.20 mix. Must add up to 1 |
 | `buckets.review` | Unfinished projects scoring this or more (40) are Review instead of Keep |
-| `doneStatuses` | Notion statuses that mean "done" (later phase) |
+| `doneStatuses` | Notion statuses that mean finished (`["Done"]` for your board). List several if you ever add one, e.g. `["Done", "Delivered"]` |
+| `notion.token` | Your Notion integration's secret (`ntn_…`). `""` = no Notion. Only ever in `config.json` (section 5) |
+| `notion.dataSourceId` | Your Projects board's **data source** ID (a copied Notion link works too) |
+| `notion.titleProperty` / `statusProperty` / `endDateProperty` | The names of the board's columns: `Project name`, `Status`, `End date`. Change them if you rename those columns in Notion (`endDateProperty` can be `""`) |
 | `folders.ignore` | Top-level folders to skip completely |
 | `folders.shared` | Folders used across projects: measured, never ranked |
 | `folders.containers` | Folders that hold many shoots (like `NCHS Football`). Each subfolder becomes its own project |
-| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 8) |
+| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 9) |
 | `fileTypes.finalExportWords` | Words in an export's name (or its folder's) that mean "final" (`final`, `fd`) |
 | `fileTypes.notFinalWords` | Words that mean "not final" even if Final/FD is there too (`draft`, `rough`, `wip`) |
 | `fileTypes.*` (the rest) | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
@@ -665,7 +874,7 @@ The dashboard re-reads `config.json` every time a page loads, so most changes
 show up when you refresh (scores after the next Scan now). `server` changes need
 a restart of `npm start`.
 
-## 11. Checking the numbers against Finder
+## 12. Checking the numbers against Finder
 
 Run `npm run scan:details`, pick a project, and compare:
 
@@ -708,7 +917,7 @@ TB/GB).
 If something looks wrong, note the project name and what Finder says, and we'll
 adjust the rules.
 
-## 12. Naming exports and where to save things
+## 13. Naming exports and where to save things
 
 You **don't need to rename project folders** — folder names don't change scores.
 What matters:
@@ -744,7 +953,7 @@ media links break. And if you rename a folder that's listed in `config.json`
 (shared, containers, pinned...), update the name there too; the scan warns you
 about names it can't find.
 
-## 13. Run the tests
+## 14. Run the tests
 
 ```
 npm test
@@ -756,12 +965,20 @@ plan, a scan of a fake drive, the database (scanning twice creates no
 duplicates, missing projects are kept, a pinned project is never Ready, Library
 scans are kept apart, older databases upgrade without losing anything), the
 nightly schedule, the dashboard server (each route, Scan now's progress, unplugged
-drives, the localhost guards), and the safety checks. All should say `pass`.
+drives, the localhost guards), Notion (your four real folder/page examples
+come out as top suggestions, a confirmed link survives rescans, a "No Notion
+page" folder isn't suggested, Notion being offline keeps the last statuses),
+and the safety checks: nothing in the app can change files, the only Notion
+calls are the two read calls, and no Notion token is in any file git would
+commit. All should say `pass`.
+
+Notion tests use a **fake** Notion (`tests/fakeNotion.js`) that answers like
+the real one, so they never touch your real board or need internet.
 
 The database tests use their own throwaway database inside `data/`; they never
 touch your real `data/dashboard.db`.
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 - **"Can't find /Volumes/BRIGSMEDIA. Is the drive plugged in?"** — plug it in,
   or run `ls /Volumes` and fix `drives.working` in `config.json`.
@@ -808,6 +1025,26 @@ touch your real `data/dashboard.db`.
 - **A drive shows "Not connected" but it's plugged in** — check its name with
   `ls /Volumes` against `drives` in `config.json`, then refresh the page.
 
+- **"Notion: not connected — No Notion token in config.json yet"** — follow
+  section 5 to make one and paste it as `notion.token`.
+- **"Notion didn't accept the token"** — copy the secret again from the
+  integration's page (Show → Copy), paste it between the quotes, and press
+  Refresh Notion. If you regenerated it in Notion, the old one stops working.
+- **"Notion can't find the Projects data source"** — the database isn't shared
+  with the integration (Projects → ••• → Connections → add it), or
+  `notion.dataSourceId` is the database ID. In Notion: open Projects → ••• →
+  **Manage data sources** → ••• next to the data source → **Copy data source ID**.
+- **"Your integration isn't allowed to read the Projects database"** — in the
+  integration's settings, tick **Read content**.
+- **"Your Notion database doesn't look as expected: there's no "Status"
+  column"** — a column was renamed in Notion. The message lists the columns it
+  found; put the right names under `notion` in `config.json`.
+- **"Can't reach Notion"** — no internet (or Notion is down). Everything else
+  works with the last synced statuses; press Refresh Notion later.
+- **A folder isn't suggested the page you expect** — pick it from the
+  **Another Notion page…** dropdown. Suggestions only help; the dropdown has
+  every page.
+
 ## Known limitations
 
 - **DaVinci Resolve project library.** Your Resolve projects live in the shared
@@ -817,7 +1054,7 @@ touch your real `data/dashboard.db`.
   anything Resolve-based. (A later phase can read the library's per-project
   save dates.)
 - **Exports and project files saved outside the project folder** aren't linked
-  to their project. See section 12.
+  to their project. See section 13.
 - **A final-looking name isn't proof.** The app ignores "Final" that comes from
   the project's own name, but a draft named, say, `State Final Recap v1.mp4` in
   a project called `NCHS Basketball` would still look final. That's why the
@@ -831,7 +1068,12 @@ touch your real `data/dashboard.db`.
   unless you turn them on.
 - **Renaming a project folder** makes it look like a new project: the old name
   is marked missing and the new name starts fresh (pin it again if it was
-  pinned).
+  pinned, and link it to Notion again).
+- **Notion links are per folder on the Working SSD.** A project moved to the
+  Library has its own Library row, which isn't linked (Library projects aren't
+  scored, so it doesn't matter yet).
+- **Notion statuses are as of the last sync.** Changing a status in Notion shows
+  up after Refresh Notion or Scan now, not by itself.
 - **One Working SSD per database.** Projects are tracked by their path from the
   top of the drive. If you point `drives.working` at a different drive, the
   first drive's projects show as no longer on the SSD.
@@ -863,8 +1105,11 @@ src/scanner/parseName.js pulls dates out of folder names ("Soccer 8-24")
 src/scanner/space.js     how full each drive is (read-only)
 src/scoring/score.js     the scoring formula and the Ready/Review/Keep rule
 src/scoring/plan.js      the move plan: will it fit, is the Library full, what to move to the Archive
-src/notion/, src/offload/   Phases 4 and 5 (stubs)
+src/notion/sync.js       reads your Notion Projects board (read-only) and saves what it says
+src/notion/match.js      suggests which Notion page belongs to which folder
+src/offload/             Phase 5 (a stub)
 public/                  the dashboard pages: index.html (Overview), project.html, library.html (Done HDD),
+                         notion.html (Link to Notion),
                          styles.css, and js/ (the code that runs in your browser)
 tests/                   automated tests
 data/                    the only folder the app writes to: dashboard.db (not uploaded to GitHub)
@@ -914,6 +1159,17 @@ data/                    the only folder the app writes to: dashboard.db (not up
   leave half a scan behind.
 - **Migration** — a step that upgrades the database's layout (e.g. adds a
   column) while keeping its data. The database remembers which steps it has.
+- **API token** — a secret string that proves a program is allowed to use an
+  API, like a password for programs. Your Notion token belongs to the
+  integration you made, and can only read what you shared with it.
+- **Integration** — a "robot user" in your Notion workspace that programs act
+  as. It sees only the pages you share with it (••• → Connections).
+- **Data source** — the table of rows inside a Notion database (since Notion's
+  API version 2025-09-03). The app reads rows from your Projects data source.
+- **Pagination** — getting a long list in pieces: Notion sends 100 rows at a
+  time, plus a "cursor" saying where the next 100 start.
+- **Fuzzy matching** — comparing names that are similar but not identical. The
+  Link to Notion page uses it to suggest pages (section 5).
 - **Cron expression** — five fields that describe a repeating time:
   minute, hour, day of month, month, day of week. `0 2 * * *` = 2:00 AM daily.
 
@@ -923,5 +1179,6 @@ data/                    the only folder the app writes to: dashboard.db (not up
 2. ✅ Database (SQLite), `npm run report`, `npm run pin`, the nightly scan job
 3. ✅ Dashboard (`npm start`): Overview, project pages, the Done HDD page with the
    Library → Archive list (Move 2); Library scans saved
-4. Notion sync for project status (fills the Status column; "Complete"/"Delivered" counts as done)
+4. ✅ Notion: read your Projects board, link folders to pages (suggested, you confirm),
+   Done in Notion counts as finished, Status column, Refresh Notion
 5. Moving projects through Vericopy + a log of where each project went (only when you ask for it)

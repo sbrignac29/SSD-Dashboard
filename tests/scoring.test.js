@@ -41,19 +41,28 @@ function score(overrides, largestBytes = 100 * GB) {
 
 // --- Done ---------------------------------------------------------------------
 
-test('Done: 100 when Notion says Complete or Delivered (any capitalization)', () => {
-  assert.equal(donePart({ notionStatus: 'Complete' }, settings.doneStatuses), 100);
-  assert.equal(donePart({ notionStatus: 'delivered ' }, settings.doneStatuses), 100);
+test('Done: 100 when the linked Notion page says Done (any capitalization)', () => {
+  assert.deepEqual(settings.doneStatuses, ['Done'], "the default matches the owner's board");
+  assert.equal(donePart({ notionStatus: 'Done' }, settings.doneStatuses), 100);
+  assert.equal(donePart({ notionStatus: 'done ' }, settings.doneStatuses), 100);
+  assert.equal(donePart({ notionStatus: 'Delivered' }, ['Done', 'Delivered']), 100, 'doneStatuses can list several');
+});
+
+test('Done: the other statuses on the board fall back to the export rule', () => {
+  for (const notionStatus of ['Not started', 'In progress']) {
+    assert.equal(donePart({ notionStatus }, settings.doneStatuses), 0, notionStatus);
+    assert.equal(donePart({ notionStatus, hasFinalExport: true }, settings.doneStatuses), 70, notionStatus);
+  }
 });
 
 test('Done: 70 for a FINAL export (a video named "Final" or "FD")', () => {
   assert.equal(donePart({ hasFinalExport: true }, settings.doneStatuses), 70);
-  assert.equal(donePart({ hasFinalExport: true, notionStatus: 'In Progress' }, settings.doneStatuses), 70);
+  assert.equal(donePart({ hasFinalExport: true, notionStatus: 'In progress' }, settings.doneStatuses), 70);
 });
 
 test('Done: 0 for draft exports — they may still be in revisions', () => {
   assert.equal(donePart({ hasExport: true, hasFinalExport: false }, settings.doneStatuses), 0);
-  assert.equal(donePart({ hasExport: false, notionStatus: 'Editing' }, settings.doneStatuses), 0);
+  assert.equal(donePart({ hasExport: false, notionStatus: 'In progress' }, settings.doneStatuses), 0);
 });
 
 // --- Age ----------------------------------------------------------------------
@@ -96,7 +105,7 @@ test('worked example: final export + 67 days + half size → 59', () => {
 });
 
 test('perfect candidate: Notion done, old, largest → 100', () => {
-  const result = score({ notionStatus: 'Complete' });
+  const result = score({ notionStatus: 'Done' });
   assert.deepEqual(result.parts, { done: 100, age: 100, size: 100 });
   assert.equal(result.score, 100);
 });
@@ -156,7 +165,7 @@ test('scoreBucket splits unfinished projects at the Review threshold', () => {
 // --- Safety overrides ------------------------------------------------------
 
 test('pinned as Keep always means Keep, and says what it would have been', () => {
-  const result = score({ notionStatus: 'Complete', pinnedKeep: true });
+  const result = score({ notionStatus: 'Done', pinnedKeep: true });
   assert.equal(result.bucket, 'Keep');
   assert.match(result.notes[0], /Pinned as Keep \(would be Ready\)/);
 });
@@ -164,7 +173,7 @@ test('pinned as Keep always means Keep, and says what it would have been', () =>
 test('a pinned project is never Ready, whatever its exports, status, age, size or dates', () => {
   let readyWhenUnpinned = 0;
   for (const hasFinalExport of [false, true]) {
-    for (const notionStatus of [undefined, 'Editing', 'Complete']) {
+    for (const notionStatus of [undefined, 'In progress', 'Done']) {
       for (const days of [null, 0, 13, 14, 60, 120, 1000]) {
         for (const sizeBytes of [0, 50 * GB, 100 * GB]) {
           for (const uncertain of [{}, { incomplete: true }, { futureDatedFiles: 2 }]) {
@@ -189,7 +198,7 @@ test('a pinned project is never Ready, whatever its exports, status, age, size o
 });
 
 test("no dated files: a finished project still isn't Ready", () => {
-  const result = score({ notionStatus: 'Complete', lastEditedMs: null });
+  const result = score({ notionStatus: 'Done', lastEditedMs: null });
   assert.equal(result.daysSinceEdit, null);
   assert.equal(result.parts.age, 0);
   assert.equal(result.bucket, 'Review');

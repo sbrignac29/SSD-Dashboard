@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Link to Notion · SSD Offload</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      try {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+    <script src="js/common.js" defer></script>
+    <script src="js/notion.js" defer></script>
+    <script src="vendor/alpine.min.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">SSD Offload</a>
+        <nav aria-label="Pages">
+          <a href="/">Overview</a>
+          <a href="library.html">Done HDD</a>
+          <a href="notion.html" aria-current="page">Link to Notion</a>
+        </nav>
+        <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
+      </div>
+    </header>
+
+    <main x-data="notionPage()" x-cloak>
+      <a class="back-link" x-show="singleId" :href="`project.html?id=${singleId}`">← Back to the project</a>
+
+      <div class="banner banner-error" x-show="error" role="alert">
+        <p class="banner-title">Something needs fixing</p>
+        <p x-text="error"></p>
+      </div>
+      <p class="muted" x-show="!data && !error">Loading…</p>
+
+      <template x-if="data">
+        <div style="display: grid; gap: 20px">
+          <section class="card title-block">
+            <h1>Link to Notion</h1>
+            <p class="title-meta">
+              Match each project folder to its page on your Notion Projects board. Nothing is linked until you
+              press <strong>Confirm</strong>. A folder linked to a page whose Status is
+              <strong x-text="data.notion.doneStatuses.join(' or ')"></strong> counts as finished.
+              The app only reads Notion; it never changes anything there.
+            </p>
+            <div class="notion-box">
+              <p>
+                <span :class="data.notion.connected ? 'connected-dot' : 'not-connected'" x-text="data.notion.headline"></span>
+              </p>
+              <p class="small muted" x-text="notionDetail(data.notion)"></p>
+              <div class="notion-actions">
+                <button type="button" class="button" @click="refreshNotion()" :disabled="syncing"
+                  x-text="syncing ? 'Reading Notion…' : 'Refresh Notion'"></button>
+              </div>
+            </div>
+          </section>
+
+          <div class="banner banner-info" x-show="data.pages.length === 0">
+            <p class="banner-title">No Notion pages to pick from yet</p>
+            <p>
+              Press <strong>Refresh Notion</strong> to read your Projects board. It needs your Notion token in
+              config.json first: the README's "Connecting Notion" section walks you through it. You can still mark
+              folders "No Notion page" now.
+            </p>
+          </div>
+
+          <!-- What happened last, with Undo -->
+          <div class="banner banner-info link-message" x-show="message" aria-live="polite">
+            <p>
+              <span x-text="message"></span>
+              <button type="button" class="link-button" x-show="undoIds.length > 0" @click="undo()">Undo</button>
+            </p>
+          </div>
+
+          <section class="card" aria-labelledby="list-title">
+            <h2 id="list-title" class="visually-hidden">Folders</h2>
+            <div class="filters" x-show="!singleId">
+              <div class="filter-group">
+                <span class="filter-label" id="show-label">Show</span>
+                <div class="chips" role="group" aria-labelledby="show-label">
+                  <template x-for="tab in tabs" :key="tab.id">
+                    <button type="button" class="chip" :aria-pressed="show === tab.id" @click="setShow(tab.id)">
+                      <span x-text="tab.label"></span><span class="count" x-text="data.counts[tab.id]"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+              <label class="filter-group">
+                <span class="filter-label">Folder</span>
+                <select x-model="client" @change="filtersChanged()">
+                  <option value="*" :selected="client === '*'">All folders</option>
+                  <template x-for="c in data.clients" :key="c">
+                    <option :value="c" :selected="client === c" x-text="`In ${c}`"></option>
+                  </template>
+                  <option value="" :selected="client === ''">Top-level folders only</option>
+                </select>
+              </label>
+              <button type="button" class="button" x-show="canMarkAll()" @click="markAllNone()" :disabled="busy"
+                x-text="markAllLabel()"></button>
+            </div>
+
+            <div class="link-list">
+              <template x-for="row in data.rows" :key="row.id">
+                <article class="link-row" :aria-label="row.name">
+                  <div class="link-folder">
+                    <a class="project-name" :href="`project.html?id=${row.id}`" x-text="row.name"></a>
+                    <span class="small muted" x-text="`${formatBytes(row.sizeBytes)} · last edited ${formatDate(row.lastEdited)}`"></span>
+                  </div>
+
+                  <!-- Its link now (Linked / No Notion page lists) -->
+                  <p class="small" x-show="row.link.state === 'confirmed'">
+                    Linked to <strong x-text="`“${row.link.title}”`"></strong>
+                    <span class="muted" x-text="row.link.status ? `(${row.link.status})` : '(no status)'"></span>
+                    <span class="muted" x-show="row.link.pageGone"> · not in the last sync (deleted, or no longer shared)</span>
+                  </p>
+                  <p class="small muted" x-show="row.link.state === 'none'">You marked it: no Notion page.</p>
+
+                  <div class="link-actions" x-show="row.link.state !== null && !isOpen(row)">
+                    <button type="button" class="button" @click="openPicker(row)">Change</button>
+                    <button type="button" class="link-button" @click="act(row, 'clear')" :disabled="busy">
+                      Back to "not linked yet"
+                    </button>
+                  </div>
+
+                  <!-- Picking a page -->
+                  <div class="link-picker" x-show="row.link.state === null || isOpen(row)">
+                    <fieldset class="suggestions" x-show="row.suggestions.length > 0">
+                      <legend class="small muted">Suggested</legend>
+                      <template x-for="s in row.suggestions" :key="s.pageId">
+                        <label class="suggestion">
+                          <input type="radio" :name="`page-${row.id}`" :value="s.pageId" x-model="choices[row.id]" />
+                          <span class="suggestion-title" x-text="s.title || '(Untitled)'"></span>
+                          <span class="small muted" x-text="s.status ? `· ${s.status}` : ''"></span>
+                          <span class="match" :class="{ 'is-likely': s.likely }" x-text="`${s.score}% match`"></span>
+                          <span class="small muted" x-show="s.linkedTo.length > 0"
+                            x-text="`also linked to ${s.linkedTo.join(', ')}`"></span>
+                        </label>
+                      </template>
+                    </fieldset>
+                    <p class="small muted" x-show="row.suggestions.length === 0 && data.pages.length > 0">
+                      No Notion page looks like this folder. Pick one below, or mark it "No Notion page".
+                    </p>
+                    <div class="link-actions">
+                      <select :aria-label="`Notion page for ${row.name}`" x-model="choices[row.id]" x-show="data.pages.length > 0">
+                        <option value="">Another Notion page…</option>
+                        <template x-for="page in data.pages" :key="page.pageId">
+                          <option :value="page.pageId" :selected="choices[row.id] === page.pageId"
+                            x-text="page.status ? `${page.title} · ${page.status}` : page.title"></option>
+                        </template>
+                      </select>
+                      <button type="button" class="button button-primary" @click="act(row, 'confirm')"
+                        :disabled="busy || !choices[row.id]">Confirm</button>
+                      <button type="button" class="button" @click="act(row, 'none')" :disabled="busy"
+                        x-show="row.link.state !== 'none'">No Notion page</button>
+                    </div>
+                  </div>
+                </article>
+              </template>
+            </div>
+
+            <div class="empty" x-show="data.rows.length === 0">
+              <p x-show="show === 'todo'">Nothing left to link here: every folder is linked or marked "No Notion page".</p>
+              <p x-show="show === 'linked'">No folders are linked to Notion yet.</p>
+              <p x-show="show === 'none'">No folders are marked "No Notion page".</p>
+            </div>
+          </section>
+        </div>
+      </template>
+    </main>
+  </body>
+</html>

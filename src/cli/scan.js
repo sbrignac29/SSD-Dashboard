@@ -114,6 +114,10 @@ function withSavedScores(scanned, scored) {
       pinnedKeep: saved.pinnedKeep,
       pinnedInConfig: saved.pinnedInConfig,
       pinnedInDatabase: saved.pinnedInDatabase,
+      // The Notion link is saved in the database, not found by the scan.
+      notionLink: saved.notionLink,
+      notionTitle: saved.notionTitle,
+      notionStatus: saved.notionStatus,
       scoring: saved.scoring,
     };
   });
@@ -159,7 +163,7 @@ async function main(argv) {
       projects = withSavedScores(scan.projects, saved.projects);
     } else {
       scan = await scanDrive(config, { root, now: startedAt, onProgress: progressLine.update });
-      // No Notion connection yet, so "Done" comes from exports alone.
+      // A preview of another folder isn't linked to Notion, so "Done" comes from exports alone.
       const withPins = scan.projects.map((p) => {
         const pinnedInDatabase = savedPins.has(folderKey(p.relPath));
         return { ...p, pinnedInConfig: p.pinnedKeep, pinnedInDatabase, pinnedKeep: p.pinnedKeep || pinnedInDatabase };

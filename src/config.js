@@ -151,7 +151,25 @@ function validateConfig(config) {
   }
 
   if (!isStringList(config.doneStatuses)) {
-    problems.push('"doneStatuses" must be a list of text, e.g. ["Complete", "Delivered"].');
+    problems.push('"doneStatuses" must be a list of text: the Notion statuses that mean finished, e.g. ["Done"].');
+  }
+
+  // Notion (Phase 4). An empty token is fine: the dashboard then shows
+  // "Notion: not connected" and scores from exports alone.
+  const notion = config.notion || {};
+  if (typeof notion.token !== 'string') {
+    problems.push('"notion.token" must be your Notion token in quotes, or "" for no Notion.');
+  }
+  if (typeof notion.dataSourceId !== 'string' || (notion.dataSourceId.trim() !== '' && notionId(notion.dataSourceId) === null)) {
+    problems.push(
+      '"notion.dataSourceId" must be the ID of your Projects data source, e.g. "233517a5-0199-8028-a552-000b7d81cc6b" ' +
+        '(32 letters and digits; a copied Notion link works too).',
+    );
+  }
+  for (const name of ['titleProperty', 'statusProperty', 'endDateProperty']) {
+    if (typeof notion[name] !== 'string' || (name !== 'endDateProperty' && notion[name].trim() === '')) {
+      problems.push(`"notion.${name}" must be the name of a property (column) in your Notion database, in quotes.`);
+    }
   }
 
   for (const name of ['ignore', 'shared', 'containers', 'keepPinned']) {
@@ -167,6 +185,35 @@ function validateConfig(config) {
   if (problems.length > 0) {
     throw new ConfigError(`There's a problem with your settings:\n  - ${problems.join('\n  - ')}`);
   }
+}
+
+// A Notion ID in its usual form (8-4-4-4-12, lowercase), from an ID written
+// with or without dashes or a copied Notion link; null if there's none.
+// Notion IDs are 32 hexadecimal characters (0-9, a-f).
+function notionId(text) {
+  // In a link, ignore everything after "?" (e.g. "?v=..." is a view's ID).
+  const before = String(text ?? '').split(/[?#]/)[0].toLowerCase();
+  const matches = before.match(/(?<![0-9a-f])[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}(?![0-9a-f])/g);
+  if (!matches) return null;
+  // In a link, the ID is the last one (after the page name).
+  const hex = matches[matches.length - 1].replace(/-/g, '');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// The Notion settings, tidied: { token, dataSourceId, titleProperty, statusProperty,
+// endDateProperty, configured } — configured = there's a token and an ID to use.
+function notionSettings(config) {
+  const notion = config.notion ?? {};
+  const token = String(notion.token ?? '').trim();
+  const dataSourceId = notionId(notion.dataSourceId);
+  return {
+    token,
+    dataSourceId,
+    titleProperty: String(notion.titleProperty ?? '').trim(),
+    statusProperty: String(notion.statusProperty ?? '').trim(),
+    endDateProperty: String(notion.endDateProperty ?? '').trim(),
+    configured: token !== '' && dataSourceId !== null,
+  };
 }
 
 // Returns the defaults with `overrides` applied on top, after checking them.
@@ -273,4 +320,6 @@ module.exports = {
   deepMerge,
   isInside,
   assertSafeLocations,
+  notionId,
+  notionSettings,
 };

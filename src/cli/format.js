@@ -196,7 +196,11 @@ function bucketSummarySection({ projects }, paint) {
   const ready = projects.filter((p) => p.scoring.bucket === 'Ready');
   if (ready.length > 0) {
     lines.push('', paint.bold('Ready — finished because of'));
-    for (const p of ready) lines.push(`  • ${p.name}: ${p.finalExportFile ?? 'Notion status'}`);
+    for (const p of ready) {
+      // The final export, and/or the linked Notion page (Done there = finished).
+      const notion = p.notionStatus ? `Notion "${p.notionTitle}": ${p.notionStatus}` : null;
+      lines.push(`  • ${p.name}: ${[notion, p.finalExportFile].filter(Boolean).join(' · ')}`);
+    }
     lines.push(
       paint.dim(
         "  Check these before moving: the app can't see edits saved only in Resolve Project Library or the\n" +
@@ -275,7 +279,7 @@ function warningsSection({ scan }, paint) {
 function scoreExplanation(p, weights) {
   const { parts, bucket, score, daysSinceEdit } = p.scoring;
   const doneWhy =
-    parts.done === 100 ? 'Notion says done' : parts.done === 70 ? 'final export' : p.hasExport ? 'draft export only' : 'no export';
+    parts.done === 100 ? 'Done in Notion' : parts.done === 70 ? 'final export' : p.hasExport ? 'draft export only' : 'no export';
   const ageWhy = daysSinceEdit === null ? 'no dated files' : `${daysSinceEdit.toFixed(1)} days since last edit`;
   // The parts are shown rounded to 0.1, so adding them up by hand can land
   // 0.1 away from the real score. Say so instead of looking like a mistake.

@@ -12,6 +12,8 @@
 //   GET  /api/drives     the three drive cards
 //   GET  /api/projects   the table (with the filters in the address)
 //   POST /api/scan       the Scan now button; then GET /api/scan for progress
+//   GET  /api/notion     "Notion: connected / not connected"
+//   POST /api/notion/sync  the Refresh Notion button
 
 // eslint-disable-next-line no-unused-vars
 function overviewPage() {
@@ -28,7 +30,11 @@ function overviewPage() {
     list: null,
     scan: { running: false, percent: 0, message: '', outcome: null, finishedAt: null },
     scanNote: null, // a one-off message, e.g. "plug in a drive"
-    filters: { tag: '', client: '*', from: '', to: '' },
+    notion: null,
+    notionBusy: false,
+    notionNote: null,
+    // notion: '' (all) | 'unlinked' | 'no-page' | 'status:Done' (a Notion status)
+    filters: { tag: '', client: '*', from: '', to: '', notion: '' },
     sort: { key: 'tag', dir: 'asc' },
     columns: [
       { key: 'name', label: 'Project' },
@@ -43,7 +49,7 @@ function overviewPage() {
     // the page never starts a scan.
     async init() {
       this.readFiltersFromAddress();
-      await Promise.all([this.loadSummary(), this.loadDrives(), this.loadProjects(), this.checkScan()]);
+      await Promise.all([this.loadSummary(), this.loadDrives(), this.loadProjects(), this.loadNotion(), this.checkScan()]);
       Dashboard.onThemeChange(() => this.drawChart());
       // Notice drives being plugged in or out: re-check them when you come
       // back to the tab, and every 30 seconds.
@@ -72,6 +78,29 @@ function overviewPage() {
       return this.load(async () => {
         this.drives = (await api('/api/drives')).drives;
       });
+    },
+
+    loadNotion() {
+      return this.load(async () => {
+        this.notion = await api('/api/notion');
+      });
+    },
+
+    // Reads Notion now (a few seconds). Problems aren't errors: the answer
+    // says "not connected" and why, and the saved statuses stay in use.
+    async refreshNotion() {
+      this.notionBusy = true;
+      this.notionNote = null;
+      try {
+        const answer = await api('/api/notion/sync', { method: 'POST' });
+        this.notion = answer.notion;
+        this.notionNote = answer.message;
+        await Promise.all([this.loadSummary(), this.loadProjects()]);
+      } catch (error) {
+        this.notionNote = error.message;
+      } finally {
+        this.notionBusy = false;
+      }
     },
 
     loadProjects() {
@@ -145,7 +174,7 @@ function overviewPage() {
         if (this.scan.running) {
           setTimeout(tick, 500);
         } else {
-          await Promise.all([this.loadSummary(), this.loadDrives(), this.loadProjects()]);
+          await Promise.all([this.loadSummary(), this.loadDrives(), this.loadProjects(), this.loadNotion()]);
         }
       };
       setTimeout(tick, 500);
@@ -167,6 +196,7 @@ function overviewPage() {
       this.filters.client = params.has('client') ? params.get('client') : '*';
       this.filters.from = params.get('from') ?? '';
       this.filters.to = params.get('to') ?? '';
+      this.filters.notion = params.has('status') ? `status:${params.get('status')}` : (params.get('notion') ?? '');
     },
 
     filterParams() {
@@ -175,6 +205,8 @@ function overviewPage() {
       if (this.filters.client !== '*') params.set('client', this.filters.client);
       if (this.filters.from) params.set('from', this.filters.from);
       if (this.filters.to) params.set('to', this.filters.to);
+      if (this.filters.notion.startsWith('status:')) params.set('status', this.filters.notion.slice('status:'.length));
+      else if (this.filters.notion) params.set('notion', this.filters.notion);
       return params.toString();
     },
 
@@ -190,11 +222,12 @@ function overviewPage() {
     },
 
     hasFilters() {
-      return this.filters.tag !== '' || this.filters.client !== '*' || this.filters.from !== '' || this.filters.to !== '';
+      const { tag, client, from, to, notion } = this.filters;
+      return tag !== '' || client !== '*' || from !== '' || to !== '' || notion !== '';
     },
 
     clearFilters() {
-      this.filters = { tag: '', client: '*', from: '', to: '' };
+      this.filters = { tag: '', client: '*', from: '', to: '', notion: '' };
       this.filtersChanged();
     },
 
@@ -232,6 +265,13 @@ function overviewPage() {
           (a.tag === 'ready' ? b.sizeBytes - a.sizeBytes : (b.score ?? 0) - (a.score ?? 0)),
       }[key];
       return [...this.list.projects].sort((a, b) => sign * compare(a, b) || text(a.name).localeCompare(text(b.name)));
+    },
+
+    // The Status cell's tooltip: which Notion page it comes from.
+    statusTitle(project) {
+      if (project.notionLink === 'confirmed') return `Notion page: ${project.notionTitle}`;
+      if (project.notionLink === 'none') return 'You marked it: no Notion page';
+      return 'Not linked to a Notion page yet';
     },
 
     // A click anywhere on a row opens the project (the name is also a link).

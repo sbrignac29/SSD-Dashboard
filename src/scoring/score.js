@@ -5,9 +5,10 @@
 //
 //   Score = 0.45 × Done + 0.35 × Age + 0.20 × Size     (each part 0–100)
 //
-//   Done: 100 if Notion says Complete/Delivered, 70 if there's a FINAL export
-//         (named "Final"/"FD" or in a "Final Exports" folder), else 0.
-//         Draft exports don't count.
+//   Done: 100 if the linked Notion page's status is in doneStatuses ("Done"),
+//         otherwise 70 if there's a FINAL export (named "Final"/"FD" or in a
+//         "Final Exports" folder), else 0. Draft exports don't count. Folders
+//         not linked to Notion (or marked "No Notion page") use the export rule.
 //   Age:  0 if edited in the last 14 days, rising in a straight line to 100 at 120+ days
 //   Size: the project's size as a percentage of the largest project
 //
@@ -33,12 +34,16 @@ function roundTo1(value) {
   return Math.round(value * 10) / 10;
 }
 
+// True if this Notion status counts as finished (doneStatuses, any capitalization).
+function isDoneStatus(notionStatus, doneStatuses) {
+  if (!notionStatus) return false;
+  const status = String(notionStatus).trim().toLowerCase();
+  return doneStatuses.some((done) => done.trim().toLowerCase() === status);
+}
+
 // Done (0, 70 or 100).
 function donePart({ notionStatus, hasFinalExport }, doneStatuses) {
-  if (notionStatus) {
-    const status = String(notionStatus).trim().toLowerCase();
-    if (doneStatuses.some((done) => done.trim().toLowerCase() === status)) return 100;
-  }
+  if (isDoneStatus(notionStatus, doneStatuses)) return 100;
   return hasFinalExport ? 70 : 0;
 }
 
@@ -87,7 +92,7 @@ function readyBlockers(project, daysSinceEdit, ageDays) {
 }
 
 // Scores one project.
-//   project:  { sizeBytes, lastEditedMs, hasFinalExport, notionStatus?, pinnedKeep?,
+//   project:  { sizeBytes, lastEditedMs, hasFinalExport, notionStatus? (only for a confirmed link), pinnedKeep?,
 //               futureDatedFiles?, incomplete?, newerFootageFile? }
 //   settings: { weights, ageDays, buckets, doneStatuses } — i.e. the config
 //   context:  { now, largestBytes }
@@ -167,6 +172,7 @@ module.exports = {
   scoreProjects,
   byOffloadOrder,
   donePart,
+  isDoneStatus,
   agePart,
   sizePart,
   scoreBucket,

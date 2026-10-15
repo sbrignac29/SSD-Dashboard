@@ -10,6 +10,8 @@ const {
   isInside,
   assertSafeLocations,
   assertAppNotInside,
+  notionId,
+  notionSettings,
 } = require('../src/config');
 
 test('the shipped defaults are valid and match the plan', () => {
@@ -82,4 +84,34 @@ test('refuses drives that overlap each other', () => {
 test('the real drive layout is accepted, and a missing drive can be left empty', () => {
   assert.doesNotThrow(() => assertSafeLocations(withDefaults()));
   assert.doesNotThrow(() => assertSafeLocations(withDefaults({ drives: { archive: '' } })));
+});
+
+// --- Notion (Phase 4) ---------------------------------------------------------
+
+test('Notion: no token is fine (the dashboard just says "Notion: not connected")', () => {
+  const settings = notionSettings(withDefaults());
+  assert.equal(settings.token, '');
+  assert.equal(settings.configured, false);
+  assert.equal(settings.dataSourceId, '233517a5-0199-8028-a552-000b7d81cc6b', "the owner's Projects data source");
+  assert.equal(notionSettings(withDefaults({ notion: { token: ' abc ' } })).configured, true);
+});
+
+test('Notion: the data source ID can be pasted with or without dashes, or inside a link', () => {
+  assert.equal(notionId('233517a501998028a552000b7d81cc6b'), '233517a5-0199-8028-a552-000b7d81cc6b');
+  assert.equal(notionId('233517A5-0199-8028-A552-000B7D81CC6B'), '233517a5-0199-8028-a552-000b7d81cc6b');
+  // A database link: the ID after the page name, not the view's ID after "?v=".
+  assert.equal(
+    notionId('https://www.notion.so/brigsmedia/Cafe-233517a501998055b2d5dc8f88dcd53c?v=233517a5019980ab8f0f000c1234abcd'),
+    '233517a5-0199-8055-b2d5-dc8f88dcd53c',
+  );
+  assert.equal(notionId('Projects'), null);
+});
+
+test('Notion: settings that are the wrong kind of value are explained', () => {
+  assert.throws(() => withDefaults({ notion: { token: 12345 } }), /"notion\.token" must be your Notion token in quotes/);
+  assert.throws(() => withDefaults({ notion: { dataSourceId: 'Projects' } }), /"notion\.dataSourceId" must be the ID/);
+  assert.throws(() => withDefaults({ notion: { statusProperty: '' } }), /"notion\.statusProperty" must be the name of a property/);
+  assert.throws(() => withDefaults({ doneStatuses: 'Done' }), /"doneStatuses" must be a list of text/);
+  // An empty End date column name just means "don't read one".
+  assert.doesNotThrow(() => withDefaults({ notion: { endDateProperty: '' } }));
 });

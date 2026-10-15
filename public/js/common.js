@@ -1,7 +1,8 @@
 'use strict';
 
-// Shared by the three pages: talking to the server, formatting numbers and
-// dates, the theme button, the size chart and the folder tree.
+// Shared by the four pages: talking to the server, formatting numbers and
+// dates, the Notion status line, the theme button, the size chart and the
+// folder tree.
 //
 // This file runs in the BROWSER, not in Node. It can't see the drives or the
 // database: everything it shows comes from the server's /api/ routes, fetched
@@ -13,12 +14,13 @@ const Dashboard = (() => {
   // Asks the server for something and returns the answer (JSON, turned back
   // into objects). GET reads; POST asks the server to do something, and always
   // sends JSON (the server refuses POSTs that don't, see server.js).
+  //   body  – what to send with a POST, e.g. { projectIds: [12], action: 'none' }
   //   allow – HTTP statuses that aren't errors for this call, e.g. [409]
-  async function api(path, { method = 'GET', allow = [] } = {}) {
+  async function api(path, { method = 'GET', body = {}, allow = [] } = {}) {
     const options = { method, headers: { Accept: 'application/json' } };
     if (method !== 'GET') {
       options.headers['Content-Type'] = 'application/json';
-      options.body = '{}';
+      options.body = JSON.stringify(body);
     }
     let response;
     try {
@@ -26,14 +28,14 @@ const Dashboard = (() => {
     } catch {
       throw new Error("Can't reach the dashboard. Is `npm start` still running in Terminal?");
     }
-    let body = null;
+    let answer = null;
     try {
-      body = await response.json();
+      answer = await response.json();
     } catch {
       // Not JSON; handled below.
     }
-    if (response.ok || allow.includes(response.status)) return body;
-    throw new Error(body?.error ?? `The server answered ${response.status}.`);
+    if (response.ok || allow.includes(response.status)) return answer;
+    throw new Error(answer?.error ?? answer?.message ?? `The server answered ${response.status}.`);
   }
 
   // --- Formatting -------------------------------------------------------------
@@ -103,9 +105,31 @@ const Dashboard = (() => {
     return '';
   }
 
+  // The second half of the "Notion: ..." line, from GET /api/notion: when it
+  // last synced, or why it's not connected (and that saved statuses are in use).
+  function notionDetail(notion) {
+    if (!notion) return '';
+    if (notion.syncing) return 'Reading Notion…';
+    const synced = notion.lastSync ? `last synced ${formatDateTime(notion.lastSync.at)} (${formatAgo(notion.lastSync.at)})` : '';
+    if (notion.connected) return `${synced} · ${plural(notion.pageCount, 'page')}`;
+    const saved = notion.usingSavedStatuses ? ` Using the statuses from the ${synced}.` : '';
+    return `${notion.detail ?? ''}${saved}`;
+  }
+
   // The helpers every page's Alpine component gets, so the HTML can call them
   // (e.g. x-text="formatBytes(p.sizeBytes)").
-  const helpers = { formatBytes, formatPercent, formatCount, plural, formatDate, formatDateTime, formatAgo, meterLevel, TAG_ICONS };
+  const helpers = {
+    formatBytes,
+    formatPercent,
+    formatCount,
+    plural,
+    formatDate,
+    formatDateTime,
+    formatAgo,
+    meterLevel,
+    notionDetail,
+    TAG_ICONS,
+  };
 
   // --- Theme: Auto (follow the Mac), Light, Dark ------------------------------
 

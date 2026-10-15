@@ -972,6 +972,112 @@ details[open] > summary .tree-toggle {
   font-style: italic;
 }
 
+/* --- Notion (Phase 4) ------------------------------------------------------- */
+
+.notion-box {
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--grid);
+}
+
+.notion-actions,
+.link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+}
+
+.link-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* never wider than the screen, even with long page names */
+}
+
+.link-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* never wider than the screen, even with long page names */
+  gap: 10px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--grid);
+  min-width: 0;
+}
+
+.link-row:first-child {
+  padding-top: 0;
+}
+
+.link-folder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.link-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* never wider than the screen, even with long page names */
+  gap: 10px;
+}
+
+.link-picker select {
+  max-width: min(100%, 420px);
+}
+
+.suggestions {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.suggestions legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.suggestion:hover {
+  background: var(--surface-2);
+}
+
+.suggestion:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--pinned-bg);
+}
+
+.suggestion-title {
+  font-weight: 600;
+}
+
+.match {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.match.is-likely {
+  color: var(--ready-text);
+  font-weight: 600;
+}
+
+.link-message {
+  position: sticky;
+  top: 8px;
+  z-index: 1;
+}
+
 /* --- Phones and narrow windows -------------------------------------------- */
 
 @media (max-width: 900px) {
@@ -995,6 +1101,22 @@ details[open] > summary .tree-toggle {
 
   .brand {
     display: none;
+  }
+
+  /* Four page links + the theme button don't fit a phone: the links scroll sideways. */
+  .topbar nav {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar nav a {
+    padding: 6px 8px;
+  }
+
+  .theme-button {
+    font-size: 0.8rem;
+    padding: 4px 8px;
   }
 
   main {
