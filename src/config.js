@@ -86,8 +86,8 @@ function validateConfig(config) {
   for (const oldName of ['ssdPath', 'archivePath']) {
     if (oldName in config) {
       problems.push(
-        `"${oldName}" was replaced by the "drives" section. Remove it and set ` +
-          '"drives": { "working": "/Volumes/BRIGSMEDIA", "library": "...", "archive": "..." } instead.',
+        `"${oldName}" was replaced by the "drives" section: your config.json is from before the three-drive ` +
+          'update. Copy the example again (cp config.example.json config.json) and redo any edits.',
       );
     }
   }

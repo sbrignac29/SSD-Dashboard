@@ -109,6 +109,14 @@ const MIGRATIONS = [
     checksum_result   TEXT               -- Vericopy's verification result
   );
   `,
+
+  // 2 — the "newer footage" check: a finished project isn't Ready while it
+  // has footage more than a day newer than its final export (maybe another
+  // shoot still to edit). Scoring reads it, so it's saved like every other
+  // scoring fact; otherwise re-scoring after a pin could wrongly say Ready.
+  `
+  ALTER TABLE projects ADD COLUMN newer_footage_file TEXT;  -- media newer than the final export (blocks Ready)
+  `,
 ];
 
 // --- Opening -----------------------------------------------------------------
@@ -259,6 +267,7 @@ function rowToProject(row) {
     exportExampleFile: row.export_file,
     hasFinalExport: row.has_final_export === 1,
     finalExportFile: row.final_export_file,
+    newerFootageFile: row.newer_footage_file,
     futureDatedFiles: row.future_dated_files,
     incomplete: row.incomplete === 1,
     pinnedInDatabase: row.pinned_keep === 1,
@@ -297,6 +306,7 @@ function factsToRow(facts, scannedAtIso) {
     export_file: facts.exportExampleFile,
     has_final_export: facts.hasFinalExport ? 1 : 0,
     final_export_file: facts.finalExportFile,
+    newer_footage_file: facts.newerFootageFile ?? null,
     future_dated_files: facts.futureDatedFiles,
     incomplete: facts.incomplete ? 1 : 0,
     scanned_at: scannedAtIso,
@@ -319,13 +329,13 @@ const UPSERT_PROJECT_SQL = `
     path, name, kind, client,
     size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes, project_bytes, other_bytes,
     file_count, last_modified, last_modified_file, last_nle_save, last_nle_save_file,
-    has_export, export_file, has_final_export, final_export_file, future_dated_files, incomplete,
+    has_export, export_file, has_final_export, final_export_file, newer_footage_file, future_dated_files, incomplete,
     first_seen, last_scanned, missing
   ) VALUES (
     @path, @name, @kind, @client,
     @size_bytes, @raw_bytes, @proxy_bytes, @export_bytes, @cache_bytes, @project_bytes, @other_bytes,
     @file_count, @last_modified, @last_modified_file, @last_nle_save, @last_nle_save_file,
-    @has_export, @export_file, @has_final_export, @final_export_file, @future_dated_files, @incomplete,
+    @has_export, @export_file, @has_final_export, @final_export_file, @newer_footage_file, @future_dated_files, @incomplete,
     @scanned_at, @scanned_at, 0
   )
   ON CONFLICT (path) DO UPDATE SET
@@ -348,6 +358,7 @@ const UPSERT_PROJECT_SQL = `
     export_file = excluded.export_file,
     has_final_export = excluded.has_final_export,
     final_export_file = excluded.final_export_file,
+    newer_footage_file = excluded.newer_footage_file,
     future_dated_files = excluded.future_dated_files,
     incomplete = excluded.incomplete,
     score = NULL,

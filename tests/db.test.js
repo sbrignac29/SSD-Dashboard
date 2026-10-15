@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { DATA_DIR, withDefaults, isInside } = require('../src/config');
 const { scanDrive, ScanError } = require('../src/scanner/scan');
-const { openDatabase, saveScan, togglePin, listProjects, latestScan, DatabaseError } = require('../src/db');
+const { openDatabase, saveScan, togglePin, listProjects, latestScan, DatabaseError, MIGRATIONS } = require('../src/db');
 const { scanAndSave } = require('../src/jobs/scanAndSave');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -203,6 +203,37 @@ describe('saving scans', () => {
   });
 });
 
+describe('upgrading the database', () => {
+  it('a database made by an earlier version is upgraded in place, keeping its rows', async () => {
+    // Build a version-1 file by hand, the way the first Phase 2 build left it.
+    const file = path.join(base, 'from-version-1.db');
+    const Database = require('better-sqlite3');
+    const old = new Database(file);
+    old.exec(MIGRATIONS[0]);
+    old.pragma('user_version = 1');
+    old.close();
+    db.close();
+    db = openDatabase({ file }); // upgrades it (afterEach closes it)
+    assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length);
+    const columns = db.prepare('PRAGMA table_info(projects)').all().map((c) => c.name);
+    assert.ok(columns.includes('newer_footage_file'));
+
+    await save(NOW);
+    await save(NOW + HOUR);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM projects').get().n, 5);
+  });
+
+  it('a read-only command asks for a scan instead of upgrading', () => {
+    const file = path.join(base, 'needs-upgrade.db');
+    const Database = require('better-sqlite3');
+    const old = new Database(file);
+    old.exec(MIGRATIONS[0]);
+    old.pragma('user_version = 1');
+    old.close();
+    assert.throws(() => openDatabase({ file, readonly: true }), /Run `npm run scan` once/);
+  });
+});
+
 describe('safety', () => {
   it('scanning and saving changes nothing on the SSD', async () => {
     const before = snapshot(ssd);
@@ -251,6 +282,29 @@ describe('pins', () => {
     const unpinned = togglePin(db, config, 'Old Finished');
     assert.equal(unpinned.result, 'unpinned');
     assert.equal(row('Old Finished').bucket, 'Ready');
+  });
+
+  it('footage newer than the final export still blocks Ready after a pin round-trip', async () => {
+    // Game 1 is exported as final; Game 2 was shot later and isn't edited yet.
+    file('Two Games/Exports/Game 1 FD.mp4', 800, 100);
+    file('Two Games/Footage/game1.mov', 3000, 101);
+    file('Two Games/Footage/game2.mov', 3000, 30);
+    try {
+      const config = testConfig();
+      await save(NOW);
+      const before = row('Two Games');
+      assert.equal(before.has_final_export, 1);
+      assert.equal(before.newer_footage_file, 'Footage/game2.mov');
+      assert.equal(before.bucket, 'Review');
+
+      togglePin(db, config, 'Two Games');
+      assert.equal(row('Two Games').bucket, 'Keep');
+      togglePin(db, config, 'Two Games'); // unpin: re-scored from the saved row
+      assert.equal(row('Two Games').bucket, 'Review');
+      assert.match(row('Two Games').score_notes, /newer than its final export/);
+    } finally {
+      fs.rmSync(path.join(ssd, 'Two Games'), { recursive: true, force: true });
+    }
   });
 
   it('pinning changes only the pinned project', async () => {

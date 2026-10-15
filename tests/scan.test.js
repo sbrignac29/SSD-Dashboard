@@ -72,6 +72,18 @@ describe('scanner on a fake drive', () => {
     file('Resolve Project Library/Projects/QB Era/Project.db', 300, 1);
     file('Future Cam/clip.mov', 600, -2000); // camera clock set ~5 years ahead
     file('Future Cam/old.mov', 600, 300);
+    // One FD for Game 1, but Game 2 was shot later and isn't edited yet
+    file('Hoops/Game 1/Exports/Game 1 Highlights FD.mp4', 300, 35);
+    file('Hoops/Game 2/Footage/clip.mov', 900, 20);
+    // A photo shoot: finished when a photo export says Final
+    file('Senior Portraits/Raw/IMG_0001.CR3', 500, 60);
+    file('Senior Portraits/Exports/Senior Portraits FINAL 001.jpg', 50, 40);
+    // A video project with a final thumbnail but only draft videos: NOT finished
+    file('Promo Spot/Exports/Promo v3.mp4', 400, 30);
+    file('Promo Spot/Exports/Thumbnail FINAL.jpg', 10, 30);
+    // A video project with footage but no video export yet, and a final thumbnail: NOT finished
+    file('Rowdies Promo/Footage/C0001.MP4', 700, 60);
+    file('Rowdies Promo/Exports/Thumbnail FINAL.jpg', 10, 40);
     file('$RECYCLE.BIN/junk.mov', 10, 5);
     file('.Spotlight-V100/store', 10, 0);
     file('SUNBURNED.mp4', 700, 300);
@@ -259,6 +271,27 @@ describe('scanner on a fake drive', () => {
     const scan = await scanDrive(config, { now: NOW });
     assert.equal(byName(scan.projects, "Veteran's Day Video").pinnedKeep, true);
     assert.equal(scan.warnings.filter((w) => w.includes('keepPinned')).length, 0);
+  });
+
+  it('footage newer than the final export is flagged (another shoot still to edit)', async () => {
+    const hoops = byName((await runScan()).projects, 'Hoops');
+    assert.equal(hoops.hasFinalExport, true);
+    assert.equal(hoops.finalExportFile, 'Game 1/Exports/Game 1 Highlights FD.mp4');
+    assert.equal(hoops.newerFootageFile, 'Game 2/Footage/clip.mov');
+    const soccer = byName((await runScan()).projects, 'Soccer 8-24');
+    assert.equal(soccer.newerFootageFile, null); // its footage is older than its FD
+  });
+
+  it('a photo-only project is finished by a final photo export; a video project is not', async () => {
+    const scan = await runScan();
+    const portraits = byName(scan.projects, 'Senior Portraits');
+    assert.equal(portraits.hasFinalExport, true);
+    assert.equal(portraits.finalExportFile, 'Exports/Senior Portraits FINAL 001.jpg');
+    const promo = byName(scan.projects, 'Promo Spot');
+    assert.equal(promo.hasExport, true);
+    assert.equal(promo.hasFinalExport, false); // a final thumbnail doesn't finish a video project
+    const rowdies = byName(scan.projects, 'Rowdies Promo');
+    assert.equal(rowdies.hasFinalExport, false); // video footage makes it a video project
   });
 
   it('a whole-SSD scan reports its scope', async () => {

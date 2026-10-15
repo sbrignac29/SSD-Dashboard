@@ -68,10 +68,18 @@ How this is enforced today:
   project, other), newest modified date, last save of a project file (.drp/.prproj/...),
   whether it has exports (any file classified `export`: inside an export-word folder
   *within* the project, or a video whose name has an export word — the project's own name
-  never counts, e.g. "Soccer Finals Temp"), and whether it has a **final export**: a video
-  export whose name has a `fileTypes.finalExportWords` word ("Final" or "FD", version
-  suffixes like FINALv2 allowed). Plain exports may be drafts in revision and don't mean
-  finished. It records which file set each flag. It uses **modification time (mtime), never access time**.
+  never counts, e.g. "Soccer Finals Temp"), and whether it has a **final export**
+  (`src/scanner/classify.js` → `finalExportKind`): an export whose name has a
+  `fileTypes.finalExportWords` word ("Final"/"FD"; version suffixes up to 4 digits, e.g.
+  FINALv2; "Final Draft" counts as FD) or that sits in a final-exports folder ("Final Exports",
+  "Exports/FD"). Runs of 2+ words repeating the project's path don't count (singular/plural
+  folded: "Regional Final Highlights v1" in a "...Regional Final" project, "Soccer Final v1" in
+  "Soccer Finals Temp" are drafts; "Highlights FINAL" there is final), nor do game rounds
+  (Semi/Quarter/Sectional/Regional/State/District/Conference/Championship-Final, Pre/Not-Final),
+  `notFinalWords` (draft/drafts/rough/wip, also as a folder), or UUIDs anywhere in a name.
+  Video finals count; photo finals only for projects with no raw video and no video exports. Plain exports may be drafts in revision and don't mean
+  finished. It records the newest final export file, and `newerFootageFile` when raw footage
+  is more than a day newer than it (another shoot still to edit). It uses **modification time (mtime), never access time**.
   Hidden/housekeeping files (`.DS_Store`, `._*`, `Thumbs.db`) count toward size but
   never toward "last edited" — Finder rewrites them just from browsing.
 - Scoring: `Score = 0.45*Done + 0.35*Age + 0.20*Size`, each part 0–100 (owner's formula).
@@ -81,9 +89,12 @@ How this is enforced today:
   - Score is rounded to 1 decimal before bucketing so the shown number and bucket agree.
 - Buckets follow the workflow rule for Move 1 ("move recent projects that are done"), agreed
   with the owner — the formula alone would make finished projects wait ~100 days:
-  - Ready: finished (Done > 0) AND untouched for `ageDays.recent` (14) days AND nothing
-    uncertain (no dated files, future-dated files — the scanner ignores dates > 1 day ahead —
-    or unreadable folders, `incomplete`). Otherwise a finished project is Review, with a note.
+  - Ready: finished (Done > 0) AND untouched for `ageDays.recent` (14) days AND no footage
+    newer than the final export AND nothing uncertain (no dated files, future-dated files —
+    the scanner ignores dates > 1 day ahead — or unreadable folders, `incomplete`). Otherwise a
+    finished project is Review, with a note. The report lists the final-export file behind
+    every Ready project, with a reminder that Resolve-library / shared 'Project files' edits
+    are invisible to the scan.
   - Unfinished: never Ready; Review if score ≥ `buckets.review` (40), else Keep.
   - Pinned as Keep (`npm run pin`, or `folders.keepPinned` where a container pin covers all
     its subfolders) → Keep.
@@ -112,8 +123,9 @@ How this is enforced today:
   `missing = 0` with its old `id`.
 - Scores are always computed from the saved rows (`rescoreProjects`), with `now` = the last
   finished scan's start, so toggling a pin reproduces the scan's scores and changes only that
-  project's bucket. Every fact scoring reads (`has_final_export`, `future_dated_files`,
-  `incomplete`, ...) must therefore be a column; a new scoring input needs a migration. The
+  project's bucket. Every fact scoring reads (`has_final_export`, `newer_footage_file`,
+  `future_dated_files`, `incomplete`, ...) must therefore be a column; a new scoring input
+  needs a migration (see `readyBlockers` / `donePart` in score.js and `rowToProject` in db.js). The
   scan command prints the saved scores (merged onto the in-memory facts by `relPath`).
 - Pins: effective pin = `pinned_keep` (set by `npm run pin`) OR `folders.keepPinned` in config
   (`isPinnedByConfig` in scan.js, same rules as the scanner). The app never edits
@@ -136,12 +148,12 @@ How this is enforced today:
   Saving Library scans (Move 2) will need its own rows, since Library projects share paths
   with their old Working-SSD rows: e.g. a `drive` column via a migration.
 
-Schema (version 1):
+Schema (version 2 — migration 1 made the tables, migration 2 added `newer_footage_file`):
 - `projects`: `id`, `path` (UNIQUE, relative to the drive top), `name`, `kind` (project/shared),
   `client` (container name for container shoots), `size_bytes`, `raw|proxy|export|cache|project|other_bytes`,
   `file_count`, `last_modified`(+`_file`), `last_nle_save`(+`_file`), `has_export`, `export_file`,
   `has_final_export`, `final_export_file`, `future_dated_files`, `incomplete`, `score`, `bucket`,
-  `score_notes`, `pinned_keep`, `first_seen`, `last_scanned`, `missing`.
+  `score_notes`, `pinned_keep`, `first_seen`, `last_scanned`, `missing`, `newer_footage_file`.
 - `scans`: `id`, `started_at`, `finished_at`, `status` (finished/failed), `root`, `project_count`,
   `file_count`, `total_bytes`, `errors` (JSON list of messages).
 - `archive_log` (empty until Phase 4): `id`, `archived_at`, `project_id` → projects, `project_path`,

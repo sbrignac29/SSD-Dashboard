@@ -6,13 +6,15 @@
 //   Score = 0.45 × Done + 0.35 × Age + 0.20 × Size     (each part 0–100)
 //
 //   Done: 100 if Notion says Complete/Delivered, 70 if there's a FINAL export
-//         (a video named "Final" or "FD"), else 0. Draft exports don't count.
+//         (named "Final"/"FD" or in a "Final Exports" folder), else 0.
+//         Draft exports don't count.
 //   Age:  0 if edited in the last 14 days, rising in a straight line to 100 at 120+ days
 //   Size: the project's size as a percentage of the largest project
 //
 // Buckets follow the workflow rule, not just the score:
 //   Ready  – finished (Done > 0) AND safe to move: not edited in the last 14
-//            days, and nothing uncertain about when it was last edited.
+//            days, no footage newer than the final export, and nothing
+//            uncertain about when it was last edited.
 //   Review – finished but not safe to move yet, or unfinished with a score of 40+
 //   Keep   – unfinished with a score under 40, or pinned in folders.keepPinned
 // The score orders Review and Keep; Ready is ordered biggest first, because
@@ -74,12 +76,19 @@ function readyBlockers(project, daysSinceEdit, ageDays) {
   if (project.incomplete) {
     reasons.push("some of its folders couldn't be read");
   }
+  if (project.newerFootageFile) {
+    reasons.push(
+      `it has a video or photo newer than its final export (${project.newerFootageFile}): if that's new ` +
+        "footage, another shoot may still need editing; if it's a cut-down or re-export, move it into " +
+        'Exports or name it Final/FD',
+    );
+  }
   return reasons;
 }
 
 // Scores one project.
 //   project:  { sizeBytes, lastEditedMs, hasFinalExport, notionStatus?, pinnedKeep?,
-//               futureDatedFiles?, incomplete? }
+//               futureDatedFiles?, incomplete?, newerFootageFile? }
 //   settings: { weights, ageDays, buckets, doneStatuses } — i.e. the config
 //   context:  { now, largestBytes }
 // Returns { score, bucket, finished, parts: { done, age, size }, daysSinceEdit, notes }.

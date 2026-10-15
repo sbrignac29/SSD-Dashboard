@@ -17,8 +17,10 @@ function formatTB(bytes) {
   return (bytes / (BYTES_PER_GB * 1000)).toFixed(2);
 }
 
+// Rounded DOWN, so the Library never shows "90%" while it's really 89.7% and
+// the 90% warning (rightly) hasn't appeared.
 function formatPercent(percent) {
-  return `${Math.round(percent)}%`;
+  return `${Math.floor(percent)}%`;
 }
 
 function formatCount(n) {
@@ -180,7 +182,7 @@ function bucketSummarySection({ projects }, paint) {
   const lines = ['', paint.bold('Buckets')];
   const descriptions = {
     Ready: 'finished and untouched for 14+ days — move to the Library',
-    Review: 'finished but edited recently, or unfinished but old/big',
+    Review: 'finished but not safe to move yet, or unfinished but old and big',
     Keep: 'unfinished, or pinned',
   };
   for (const bucket of ['Ready', 'Review', 'Keep']) {
@@ -189,6 +191,17 @@ function bucketSummarySection({ projects }, paint) {
     lines.push(
       `  ${label}  ${plural(inBucket.length, 'project').padStart(12)}  ` +
         `${formatGB(sum(inBucket, (p) => p.sizeBytes)).padStart(9)} GB   ${paint.dim(descriptions[bucket])}`,
+    );
+  }
+  const ready = projects.filter((p) => p.scoring.bucket === 'Ready');
+  if (ready.length > 0) {
+    lines.push('', paint.bold('Ready — finished because of'));
+    for (const p of ready) lines.push(`  • ${p.name}: ${p.finalExportFile ?? 'Notion status'}`);
+    lines.push(
+      paint.dim(
+        "  Check these before moving: the app can't see edits saved only in Resolve Project Library or the\n" +
+          "  shared 'Project files' folder, so skip any you've reopened there recently.",
+      ),
     );
   }
   const noted = projects.filter((p) => p.scoring.notes.length > 0);
@@ -286,7 +299,7 @@ function pinSources(p) {
 
 function exportDetail(p) {
   if (p.hasFinalExport) return `final — ${p.finalExportFile}`;
-  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no video named "Final" or "FD")`;
+  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no export counted as final — see README section 6)`;
   return 'none found in this folder';
 }
 
@@ -297,7 +310,8 @@ function drivesSection({ spaces, plan, libraryFull }, paint) {
     s.label,
     s.path,
     s.space
-      ? `${formatTB(s.space.usedBytes)} of ${formatTB(s.space.totalBytes)} TB used (${formatPercent(s.space.usedPercent)})`
+      ? `${formatTB(s.space.usedBytes)} of ${formatTB(s.space.totalBytes)} TB used (${formatPercent(s.space.usedPercent)}), ` +
+        `${formatTB(s.space.freeBytes)} TB free`
       : 'not connected',
   ]);
   const lines = [
@@ -387,6 +401,7 @@ function detailsSection({ projects, scored, weights }, paint) {
     if (p.pinnedKeep) lines.push(`     Pinned        yes — always Keep (${pinSources(p)})`);
     if (p.skippedLinks > 0) lines.push(`     Not followed  ${plural(p.skippedLinks, 'shortcut')} (symlinks)`);
     if (p.incomplete) lines.push("     Incomplete    some folders or files couldn't be read — see Warnings");
+    if (p.newerFootageFile) lines.push(`     Newer media   ${p.newerFootageFile} is newer than the final export`);
   });
   return lines;
 }

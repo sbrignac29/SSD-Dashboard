@@ -116,7 +116,7 @@ All the commands:
 | `npm run report` | Print the saved results from the database, **without scanning**. Instant, and works with the SSD unplugged |
 | `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 7) |
 | `npm run pin` | List the pinned projects |
-| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder as a quick preview (its subfolders are treated as projects). **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder of shoots (its subfolders are treated as projects) as a quick preview. Use it on a container like `NCHS Football` or on a whole drive — pointed at a single project folder, it would list that project's Footage/Exports subfolders as if they were separate projects. **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
 | `npm run scan -- --root "/Volumes/BRIGSMEDIA LIBRARY"` | Peek at what's on the Library. **Not saved** (its buckets still describe Move 1; the proper Move 2 view comes in Phase 3) |
 | `npm run scan -- --help` | List the options |
 
@@ -147,16 +147,19 @@ frees the most space), then Review, then Keep (highest score first):
 |---|---|
 | Size (GB) | Total size of the project folder, in the same units Finder uses |
 | Last edited | Date of the newest file in the project (hidden system files like `.DS_Store` don't count — Finder rewrites those just from browsing) |
-| Export | **final** — a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`): the project is finished. **draft** — there are exports, but none named Final/FD, so it may still be in revisions. **no** — no exports found |
+| Export | **final** — the project is finished: there's a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`) or saved in a final-exports folder (`Final Exports/`, `Exports/FD/`). **draft** — there are exports, but none that say final, so it may still be in revisions. **no** — no exports found. See section 6 for the details |
 | Score | 0–100: how good a candidate it is (see section 6). Orders Review and Keep |
-| Bucket | **Ready** — finished (final export) and untouched for 14+ days: move it to the Library. **Review** — finished but edited in the last 14 days, or unfinished but old/big. **Keep** — unfinished, or pinned |
+| Bucket | **Ready** — finished (final export) and untouched for 14+ days: move it to the Library. **Review** — finished but not safe to move yet (see Notes), or unfinished but old and big. **Keep** — unfinished, or pinned |
 
 Below the table:
 - **Buckets** — how many projects and GB are in each bucket.
+- **Ready — finished because of** — for each Ready project, the export file that
+  made it count as finished. Glance at this list before moving anything.
 - **Notes** — why a finished project isn't Ready yet (e.g. "edited 3 days ago —
-  Ready in 11 days if left alone"), and pinned projects.
-- **Drives** — how full the Working SSD, Library and Archive are (or "not
-  connected").
+  Ready in 11 days if left alone", or "footage newer than its final export"),
+  and pinned projects.
+- **Drives** — how full the Working SSD, Library and Archive are, and how much
+  is free (or "not connected").
 - **Move plan** — how much moving the Ready projects frees on the SSD, whether
   they fit on the Library, and a warning when the Library is (or would be) 90%
   full, with roughly how much of its oldest work to move to the Archive.
@@ -185,11 +188,37 @@ items (those aren't saved); run `npm run scan` for those.
 
 **Ready = finished + untouched for 14 days + nothing uncertain.**
 
-- **Finished** means a **final export**: a video file in the project whose name
-  contains the word "Final" or "FD" (a version or number on the end is fine:
-  `FINALv2`, `FD2`). Draft exports don't count. Later, Notion status
-  (Complete/Delivered) will count too.
+- **Finished** means a **final export**, inside the project folder:
+  - a video export whose name contains the word **"Final" or "FD"** (a short
+    version number on the end is fine: `FINALv2`, `FD2`), or
+  - a video export saved in a final-exports folder: one whose name says both
+    final and export/render (`Final Exports`, `FINAL FINAL RENDERS`), or a
+    `Final`/`FD` folder inside `Exports`.
+  - "Final Draft" spelled out counts as final too (in case that's what FD
+    stands for).
+  - For a **photo-only** project (no video footage or video exports at all),
+    a photo counts the same way — but it has to be an export, so save it in an
+    `Exports` folder: `Girls Golf Banners/Exports/Emma Banner FINAL.png`.
+
+  What does **not** count, so drafts aren't mistaken for finals:
+  - words that just repeat the **project's own name** — in
+    `NCHS Basketball Regional Final`, `Regional Final Highlights v1.mp4` is a
+    draft, while `Highlights FINAL.mp4` or `Regional Final Highlights FD.mp4`
+    is final. (In `Soccer Finals Temp`, `Soccer Final v1.mp4` is a draft too.)
+  - a game round: "Semi-Final", "Quarter-Final", "Sectional/Regional/State/
+    District/Conference/Championship Final" — and "Pre-Final", "Not Final";
+  - names with **Draft**, **Drafts**, **Rough** or **WIP**
+    (`fileTypes.notFinalWords`), including anything in a `Drafts` folder;
+  - long numbers and random IDs that phones put in file names.
+
+  Later, Notion status (Complete/Delivered) will count as finished too.
 - **Untouched for 14 days** means no file in the project changed in that time.
+- **No newer footage:** if there's a video (or, for photo shoots, a photo)
+  more than a day *newer* than the final export — say, Game 2 in a folder where
+  Game 1 is finished — the project waits in Review: there may be another shoot
+  still to edit. If it's actually a cut-down or re-export (a vertical version
+  for social), move it into `Exports` or name it Final/FD, and the project can
+  become Ready.
 - **Nothing uncertain:** a project isn't Ready if some of its folders couldn't
   be read, or if it has files with future dates (a camera with a wrong clock),
   because then the app can't be sure when you last worked on it.
@@ -207,8 +236,10 @@ Score = 0.45 × Done + 0.35 × Age + 0.20 × Size        (each part 0–100)
 - **Age:** 0 if edited in the last 14 days, then rising evenly to 100 at 120 days.
 - **Size:** the project's size as a percentage of the biggest project in the scan.
 
-Unfinished projects scoring 40 or more are **Review** (big or old projects that
-probably need a final export or a decision); below 40 they're **Keep**.
+Unfinished projects scoring 40 or more are **Review**; below 40 they're
+**Keep**. An unfinished project has to be both old *and* big to reach 40
+(roughly: untouched 120+ days and at least a quarter the size of the biggest
+project) — those probably need a final export or a decision.
 
 Example: final export (70), last edited 67 days ago (halfway from 14 to 120 →
 50), half the size of the biggest project (50):
@@ -344,6 +375,7 @@ Working SSD, updated by every scan.
 | `has_export`, `export_file` | Whether any export exists (drafts too), and an example file |
 | `has_final_export`, `final_export_file` | Whether a video export named "Final"/"FD" exists (the project is finished), and which file |
 | `future_dated_files`, `incomplete` | Signs the last-edit date is uncertain (camera clock, unreadable folders), which block Ready |
+| `newer_footage_file` | A video or photo more than a day newer than the final export (maybe another shoot still to edit), which blocks Ready. It's the last column, because it was added later |
 | `score`, `bucket`, `score_notes` | The result, and why a finished project isn't Ready yet or that it's pinned |
 | `pinned_keep` | 1 = you pinned it with `npm run pin`. Scans never change this |
 | `first_seen` | The first scan that found it |
@@ -396,7 +428,8 @@ to leave.
 | `folders.shared` | Folders used across projects: measured, never ranked |
 | `folders.containers` | Folders that hold many shoots (like `NCHS Football`). Each subfolder becomes its own project |
 | `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 7) |
-| `fileTypes.finalExportWords` | Words in a video export's name that mean "final" (`final`, `fd`) |
+| `fileTypes.finalExportWords` | Words in an export's name (or its folder's) that mean "final" (`final`, `fd`) |
+| `fileTypes.notFinalWords` | Words that mean "not final" even if Final/FD is there too (`draft`, `rough`, `wip`) |
 | `fileTypes.*` (the rest) | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
 
 The folder lists apply to every drive (they're laid out the same way). Folder
@@ -446,8 +479,8 @@ find "/Volumes/BRIGSMEDIA/Soccer 8-24" -type f ! -name '.*' -exec stat -f '%Sm  
 It lists the 3 most recently modified files, newest last.
 
 **Export.** The details line `Export  final — Exports/Week 1 Highlights FD.mp4`
-names the file that made the project count as finished. `draft only` names an
-export that didn't count because it isn't named Final/FD.
+(also in the "Ready — finished because of" list) names the file that made the
+project count as finished. `draft only` names an export that didn't count.
 
 **Drive space.** Select the drive in Finder's sidebar and press **⌘I**:
 "Capacity" and "Available" should match the Drives section (both in decimal
@@ -462,8 +495,13 @@ You **don't need to rename project folders** — folder names don't change score
 What matters:
 
 1. **Name the finished export with "FD" or "Final"** — e.g.
-   `Soccer 8-24 FD.mp4`. That's how the app knows a project is done. Leave
-   drafts and revision cuts without it (`Soccer 8-24 v3.mp4`).
+   `Soccer 8-24 FD.mp4` — or save it in a `Final Exports` folder. That's how the
+   app knows a project is done. Leave drafts and revision cuts without it
+   (`Soccer 8-24 v3.mp4`), or call them "Draft". For a playoff project like
+   `Regional Final`, the export still needs its own FD/Final
+   (`Highlights FINAL.mp4`): the "Final" in the game's name doesn't count.
+   Save cut-downs and social versions in `Exports` too, so they aren't mistaken
+   for new footage.
 2. **Save it inside the project folder**, ideally in an `Exports` subfolder:
    `Soccer 8-24/Exports/Soccer 8-24 FD.mp4`. Exports saved in the shared
    `FINAL EXPORTS` / `FINAL FINAL RENDERS` folders, or loose at the top of the
@@ -542,9 +580,10 @@ touch your real `data/dashboard.db`.
   save dates.)
 - **Exports and project files saved outside the project folder** aren't linked
   to their project. See section 11.
-- **A final-looking name isn't proof.** A video named with "Final" (say, footage
-  of a "State Final" game) counts as a final export. `scan:details` always names
-  the file that counted, so you can check.
+- **A final-looking name isn't proof.** The app ignores "Final" that comes from
+  the project's own name, but a draft named, say, `State Final Recap v1.mp4` in
+  a project called `NCHS Basketball` would still look final. That's why the
+  report lists the file behind every Ready project — check it before moving.
 - **Copied footage keeps its original dates.** Finder keeps a file's modified
   date when copying, so footage copied from an old card looks old until you
   start editing (your project file and renders will then be newer).
