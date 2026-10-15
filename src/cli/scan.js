@@ -17,7 +17,7 @@ const { parseArgs } = require('node:util');
 const { loadConfig, assertSafeLocations, ConfigError } = require('../config');
 const { scanDrive, ScanError } = require('../scanner/scan');
 const { scoreProjects, byScoreThenSize } = require('../scoring/score');
-const { renderReport } = require('./report');
+const { renderReport } = require('./format');
 
 const HELP = `Usage: npm run scan [-- options]
 

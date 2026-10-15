@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { renderTable, shortenText, shortenPath, formatGB } = require('../src/cli/report');
+const { renderTable, shortenText, shortenPath, formatGB } = require('../src/cli/format');
 
 test('formatGB uses decimal gigabytes, like Finder', () => {
   assert.equal(formatGB(87_512_345_678), '87.51');
