@@ -579,7 +579,8 @@ function renderSavedReport({
     ...missingSection(context, paint),
     ...warningsSection({ scan: savedScan }, paint),
     '',
-    paint.dim('Scores are from the last scan; changes to config.json apply at the next scan.'),
+    paint.dim('Scores are from the last scan. Edits to config.json apply at the next scan (scoring settings and pins'),
+    paint.dim('also at the next `npm run pin`).'),
     paint.dim('Refresh: `npm run scan` · Pin or unpin: `npm run pin -- "Project name"`'),
   ];
   return `${lines.join('\n')}\n`;

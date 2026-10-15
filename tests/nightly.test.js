@@ -43,12 +43,12 @@ test('a failed nightly scan is logged, never thrown (it must not crash the serve
 test('a successful nightly scan logs a summary', async () => {
   const infos = [];
   const task = scheduleNightlyScan({
-    run: async () => ({ projects: [{}, {}, {}], added: 1, markedMissing: 2 }),
+    run: async () => ({ scan: { projects: [{}, {}, {}], shared: [{}] }, projects: [{}, {}, {}], added: 1, markedMissing: 2 }),
     log: { info: (message) => infos.push(message), error: assert.fail },
   });
   try {
     await task.execute();
-    assert.deepEqual(infos, ['Nightly scan saved: 3 projects (1 new, 2 no longer found).']);
+    assert.deepEqual(infos, ['Nightly scan saved: 3 projects + 1 shared folder (1 new, 2 no longer on the Working SSD).']);
   } finally {
     await task.destroy();
   }
@@ -63,7 +63,7 @@ test('the schedule really fires on its own (checked with a once-a-second schedul
       run: async () => {
         clearTimeout(timer);
         resolve();
-        return { projects: [], added: 0, markedMissing: 0 };
+        return { scan: { projects: [], shared: [] }, projects: [], added: 0, markedMissing: 0 };
       },
       log: quiet,
     });

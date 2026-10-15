@@ -31,12 +31,14 @@ How this is enforced today:
 - The scanner only uses read-only calls (`readdir`, `lstat`, `stat`, `realpath`, `statfs`) and never follows symlinks.
 - `tests/safety.test.js` fails if file-changing calls (writeFile, rm, rename, mkdir, ...) or
   `child_process` appear anywhere in `src/` (direct calls, references like `map(fsp.unlink)`,
-  bracket lookups, destructuring). It checks every match on a line, so an allowed name can't
-  hide another call. The allowlist is exactly `db.js: ['mkdir']` (creating `data/` itself if
+  bracket lookups, destructuring). It checks every match on a line (the destructuring pattern's
+  closing `,`/`:`/`}` is a lookahead), so an allowed name can't hide another call, even in
+  `{ mkdirSync, rmSync }`. The allowlist is exactly `db.js: ['mkdir']` (creating `data/` itself if
   missing). Don't widen it without the owner asking.
 - `new Database(path)` (better-sqlite3) writes files but isn't a name the guard knows, so
   `src/db.js` → `openDatabase()` refuses any path outside `DATA_DIR` (checked again after
-  `realpath`) and a database file that is a symlink. Tests use their own DB files in
+  `realpath`) and a database file that is a symlink (checked with `lstat`, so a dangling link
+  to a not-yet-existing file on a drive counts too). Tests use their own DB files in
   `data/.test-*`, never `data/dashboard.db`.
 - `src/db.js` never deletes rows: projects gone from the Working SSD get `missing = 1`.
   `npm run report` opens the database read-only.
@@ -118,20 +120,26 @@ How this is enforced today:
   nightly job. A failed scan (e.g. `ScanError`, drive unplugged) is recorded as a `failed` row
   in `scans` and changes no projects.
 - One save = one IMMEDIATE transaction: upsert every project/shared folder by `path`, mark
-  rows this scan didn't see `missing = 1`, re-score, insert the `scans` row. Upserts keep
+  rows this scan didn't see `missing = 1` (except rows at or under `scan.unreadable`: folders
+  the scanner couldn't open or lstat, which are left as they were), re-score, insert the
+  `scans` row. Upserts keep
   `pinned_keep`, `first_seen`, and an already-filled `client`; a returning project gets
   `missing = 0` with its old `id`.
 - Scores are always computed from the saved rows (`rescoreProjects`), with `now` = the last
-  finished scan's start, so toggling a pin reproduces the scan's scores and changes only that
-  project's bucket. Every fact scoring reads (`has_final_export`, `newer_footage_file`,
+  finished scan's start, so with an unchanged config.json toggling a pin reproduces the scan's
+  scores and changes only that project's bucket. (A pin re-scores with the current config, so it
+  also applies edited weights/ageDays/buckets/keepPinned to every project; folder and file-type
+  settings need a scan.) Every fact scoring reads (`has_final_export`, `newer_footage_file`,
   `future_dated_files`, `incomplete`, ...) must therefore be a column; a new scoring input
   needs a migration (see `readyBlockers` / `donePart` in score.js and `rowToProject` in db.js). The
   scan command prints the saved scores (merged onto the in-memory facts by `relPath`).
 - Pins: effective pin = `pinned_keep` (set by `npm run pin`) OR `folders.keepPinned` in config
   (`isPinnedByConfig` in scan.js, same rules as the scanner). The app never edits
-  `config.json`, so `togglePin` won't "unpin" a config pin; it returns `pinned-in-config` and
-  the command explains. Pin lookup matches the report name or path via `folderKey`
-  (case-insensitive) and suggests substrings on a miss.
+  `config.json`, so `togglePin` won't "unpin" a config pin; it re-scores (so a newly added config
+  pin shows) and returns `pinned-in-config`, and the command explains. Pin lookup matches the
+  report name or path via `folderKey` (case-insensitive), preferring a row still on the SSD over
+  a missing one with the same key (case-only renames), and suggests substrings on a miss. A
+  missing project's pin can be toggled, but it isn't re-scored (`scoring: null` in the result).
 - `npm run report` prints stored scores; config edits take effect at the next scan or pin.
   Its Drives/move-plan section reads drive space live (statfs) with the saved Ready projects.
 - Write transactions use `.immediate()` so a busy database waits (5 s) instead of failing at
@@ -174,8 +182,9 @@ Schema (version 2 — migration 1 made the tables, migration 2 added `newer_foot
 
 ## Stack and conventions
 
-- Node.js ≥ 22 (better-sqlite3 13 requires it), CommonJS modules (`require` / `module.exports`),
-  `'use strict'`.
+- Node.js ≥ 22.14: better-sqlite3 13 needs Node-API 10, and on older Node it segfaults instead
+  of throwing, so `db.js` checks `process.versions.napi` first (`nodeApiProblem`). CommonJS
+  modules (`require` / `module.exports`), `'use strict'`.
 - Dependencies only when a phase needs them. Now: better-sqlite3 13 (ships Node-API prebuilt
   binaries, incl. darwin-arm64/x64, so no compiler and no rebuild after a Node upgrade) and
   node-cron 4 (`schedule(expr, fn, { noOverlap })`, `task.execute()`, `task.match(date)`).

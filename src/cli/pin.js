@@ -68,7 +68,7 @@ function explain(outcome, typedName) {
   }
   if (result === 'pinned-in-config') {
     lines.push(
-      `${name} is pinned in config.json (folders.keepPinned), so it's already always Keep.`,
+      `${name} is pinned in config.json (folders.keepPinned), so it's always Keep (the saved results now show that too).`,
       'The app never edits config.json. To unpin it, remove it from that list in config.json, then run `npm run scan`.',
     );
     return { lines, failed: false };
@@ -84,7 +84,11 @@ function explain(outcome, typedName) {
     lines.push(`Unpinned ${name}.`, describeBucket(project));
   }
   if (project.missing) {
-    lines.push(`Note: ${name} wasn't found on the SSD in the last scan. The pin is saved and applies if it comes back.`);
+    lines.push(
+      result === 'pinned'
+        ? `Note: ${name} wasn't on the Working SSD in the last scan. The pin is saved and applies if it comes back.`
+        : `Note: ${name} wasn't on the Working SSD in the last scan, so it has no current bucket.`,
+    );
   }
   return { lines: lines.filter(Boolean), failed: false };
 }

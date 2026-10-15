@@ -34,7 +34,7 @@ class DatabaseError extends Error {}
 // The schema is the database's layout: its tables and their columns. Each
 // entry below is one "migration": a step that upgrades the layout. SQLite
 // remembers which steps a file already has (a number called user_version), so
-// when Phase 3 adds a column it appends step 2 here, and your existing
+// when a later phase adds a column it appends a new step here, and your existing
 // database is upgraded in place, keeping its data.
 //
 // Conventions:
@@ -123,17 +123,32 @@ const MIGRATIONS = [
 
 // better-sqlite3 includes compiled code, so it can fail to load in ways a
 // plain JavaScript library can't. Turn those into instructions.
+//
+// Its compiled part needs Node-API version 10 (Node 22.14 or newer). On an
+// older Node it doesn't fail politely: the whole program just crashes with
+// "Segmentation fault". So check the version before loading it.
+const REQUIRED_NODE_API = 10;
+const REINSTALL_ADVICE = 'Delete the node_modules folder in the app folder, then run `npm install`.';
+
+// A message if this Node.js is too old for the database library, else null.
+function nodeApiProblem(napiVersion = process.versions.napi) {
+  if (Number(napiVersion) >= REQUIRED_NODE_API) return null;
+  return (
+    `Your Node.js (${process.version}) is too old for the database library: it needs Node 22.14 or newer.\n` +
+    'Install the current LTS version from https://nodejs.org, then run `npm install` in the app folder.'
+  );
+}
+
 function loadDriver() {
+  const problem = nodeApiProblem();
+  if (problem) throw new DatabaseError(problem);
   try {
     return require('better-sqlite3');
   } catch (error) {
     if (error.code === 'MODULE_NOT_FOUND') {
       throw new DatabaseError("The database library isn't installed. Run `npm install` in the app folder, then try again.");
     }
-    throw new DatabaseError(
-      `The database library couldn't load (${error.message}).\n` +
-        'Run `npm rebuild better-sqlite3` in the app folder. If that fails, delete the node_modules folder and run `npm install`.',
-    );
+    throw new DatabaseError(`The database library couldn't load (${error.message}).\n${REINSTALL_ADVICE}`);
   }
 }
 
@@ -153,7 +168,10 @@ function assertInsideDataDir(file) {
   if (!isInside(realFolder, fs.realpathSync(DATA_DIR))) {
     throw new DatabaseError(`Refusing to open a database outside the app's data/ folder: ${file}`);
   }
-  if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) {
+  // lstat looks at the shortcut itself. (existsSync would follow it, and say
+  // "not there" for a shortcut to a file that doesn't exist yet — then SQLite
+  // would create that file wherever the shortcut points.)
+  if (fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) {
     throw new DatabaseError(`Refusing to open a database file that is a shortcut (symlink): ${file}`);
   }
 }
@@ -197,7 +215,16 @@ function openDatabase({ file = DEFAULT_DB_PATH, readonly = false, mustExist = re
   assertInsideDataDir(target);
 
   const Database = loadDriver();
-  const db = new Database(target, { readonly, fileMustExist: readonly });
+  let db;
+  try {
+    db = new Database(target, { readonly, fileMustExist: readonly });
+  } catch (error) {
+    // better-sqlite3 loads its compiled part here, the first time it's used.
+    if (error.code === 'MODULE_NOT_FOUND' || error.code === 'ERR_DLOPEN_FAILED') {
+      throw new DatabaseError(`The database library couldn't load (${error.message}).\n${REINSTALL_ADVICE}`);
+    }
+    throw error;
+  }
   // SQLite only enforces REFERENCES (foreign keys) when asked, per connection.
   db.pragma('foreign_keys = ON');
   try {
@@ -408,9 +435,20 @@ function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
     }
 
     // Anything this scan didn't see is marked missing. Never deleted.
-    counts.markedMissing = db
-      .prepare('UPDATE projects SET missing = 1 WHERE missing = 0 AND last_scanned <> ?')
-      .run(scannedAtIso).changes;
+    // Except: rows inside a folder the scan couldn't open (e.g. a container
+    // macOS wouldn't let it read) are probably still there, so they're left
+    // as they were rather than reported as gone.
+    const unreadable = (scan.unreadable || []).map(folderKey);
+    const insideUnreadable = (rowPath) => {
+      const key = folderKey(rowPath);
+      return unreadable.some((folder) => key === folder || key.startsWith(`${folder}/`));
+    };
+    const markMissing = db.prepare('UPDATE projects SET missing = 1 WHERE id = ?');
+    for (const row of db.prepare('SELECT id, path FROM projects WHERE missing = 0 AND last_scanned <> ?').all(scannedAtIso)) {
+      if (insideUnreadable(row.path)) continue;
+      markMissing.run(row.id);
+      counts.markedMissing += 1;
+    }
 
     const scored = rescoreProjects(db, config, scan.scannedAt);
 
@@ -513,10 +551,15 @@ function listProjects(db) {
 // Week 1") or its path ("NCHS Football/Week 1"), ignoring upper/lower case.
 // Returns { project } or, if there's no exact match, { suggestions }: names
 // that contain what you typed.
+//
+// After a rename that only changes upper/lower case ("soccer" -> "Soccer"),
+// the old name (now missing) and the new one match the same text, so the
+// project still on the SSD wins.
 function findProject(db, typedName) {
   const wanted = folderKey(typedName);
   const all = listProjects(db);
-  const project = wanted === '' ? undefined : all.find((p) => folderKey(p.relPath) === wanted);
+  const matches = wanted === '' ? [] : all.filter((p) => folderKey(p.relPath) === wanted);
+  const project = matches.find((p) => !p.missing) ?? matches[0];
   if (project) return { project };
   const suggestions = wanted === '' ? [] : all.filter((p) => folderKey(p.relPath).includes(wanted)).map((p) => p.name);
   return { suggestions: suggestions.slice(0, 10) };
@@ -528,6 +571,7 @@ function findProject(db, typedName) {
 // happened, for the command to explain:
 //   { result: 'pinned' | 'unpinned', project (re-scored), stillPinnedByConfig }
 //   { result: 'pinned-in-config', project } – pinned in config.json; the app never edits that file
+//                                             (re-scores, so the saved bucket shows that pin too)
 //   { result: 'shared', project }           – shared folders aren't ranked
 //   { result: 'not-found', suggestions }
 function togglePin(db, config, typedName) {
@@ -536,7 +580,12 @@ function togglePin(db, config, typedName) {
   if (project.kind === 'shared') return { result: 'shared', project };
 
   const pinnedInConfig = isPinnedByConfig(project.relPath, config.folders.keepPinned);
-  if (pinnedInConfig && !project.pinnedInDatabase) return { result: 'pinned-in-config', project };
+  if (pinnedInConfig && !project.pinnedInDatabase) {
+    // Nothing to toggle, but if config.json changed since the last scan, the
+    // saved bucket doesn't show this pin yet. Re-score so it does.
+    const scored = db.transaction(() => rescoreProjects(db, config)).immediate();
+    return { result: 'pinned-in-config', project: scored.find((p) => p.id === project.id) ?? project };
+  }
 
   const pinned = !project.pinnedInDatabase;
   const scored = db
@@ -547,8 +596,9 @@ function togglePin(db, config, typedName) {
     .immediate(); // claim the write first (see saveScan)
   return {
     result: pinned ? 'pinned' : 'unpinned',
-    // A missing project isn't re-scored, so fall back to its saved row.
-    project: scored.find((p) => p.id === project.id) ?? { ...project, pinnedInDatabase: pinned },
+    // A missing project isn't re-scored (it's not on the SSD to score), so its
+    // saved bucket is from when it was last seen; don't pass that off as current.
+    project: scored.find((p) => p.id === project.id) ?? { ...project, pinnedInDatabase: pinned, scoring: null },
     stillPinnedByConfig: !pinned && pinnedInConfig,
   };
 }
@@ -567,6 +617,7 @@ function pinnedPathKeys(db) {
 module.exports = {
   DEFAULT_DB_PATH,
   DatabaseError,
+  nodeApiProblem,
   openDatabase,
   displayPath,
   describeDatabaseError,

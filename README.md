@@ -38,14 +38,15 @@ Archive list for Move 2, and Notion status.
 
 - A Mac with your Working SSD plugged in (plug in the Library too, so the app
   can check how much room it has).
-- **Node.js 22 or newer.** Check in Terminal:
+- **Node.js 22.14 or newer.** Check in Terminal:
   ```
   node -v
   ```
-  If it prints `v22.x` or higher, you're set. If it says "command not found" or
-  a lower number (like `v20.x`), install the **LTS** version from
-  <https://nodejs.org>. Phase 2's database library needs Node 22, and Node 20
-  stopped getting security updates in April 2026.
+  If it prints `v22.14.0` or higher (`v22.14` … `v22.x`, `v24.x`, …), you're
+  set. If it says "command not found" or a lower number (like `v22.11.0` or
+  `v20.x`), install the **LTS** version from <https://nodejs.org>, then run
+  `npm install` again. Phase 2's database library needs Node 22.14 or newer
+  (older versions crash it, so the app checks first and tells you).
 
 ## 2. Get the code
 
@@ -264,7 +265,8 @@ Pinned "Parker Soccer 10-3" as Keep.
 - Use the name exactly as the report shows it, **in quotes**. Upper/lower case
   doesn't matter. For a container shoot, `"NCHS Football / Week 1"` and
   `"NCHS Football/Week 1"` both work.
-- Typo? It suggests close matches.
+- Typo? It lists the projects whose names contain what you typed, so a part
+  of the name works for finding it (`npm run pin -- week 1`).
 - Run the **same command again** to unpin. `npm run pin` on its own lists
   everything that's pinned.
 - A pinned project is **always Keep**, through every future scan, until you
@@ -557,8 +559,11 @@ touch your real `data/dashboard.db`.
   "will it fit" check. Everything else works without it.
 - **"The database library isn't installed"** — run `npm install` in the app
   folder (needed once after pulling Phase 2).
-- **"The database library couldn't load"** — run `npm rebuild better-sqlite3`.
-  If that doesn't help, delete the `node_modules` folder and run `npm install`.
+- **"The database library couldn't load"** — delete the `node_modules` folder
+  in the app folder and run `npm install`.
+- **"Your Node.js … is too old for the database library"** (or "Segmentation
+  fault") — install the current LTS from <https://nodejs.org> (22.14 or
+  newer), then run `npm install` again.
 - **"The database is busy"** — another program is changing
   `data/dashboard.db`, usually DB Browser with unsaved edits. Click **Write
   Changes** or **Revert Changes** (or close it) and try again. Open it with
@@ -568,7 +573,7 @@ touch your real `data/dashboard.db`.
 - **"No project called … in the database"** (pin) — use the name the report
   shows, in quotes. Names come from the last scan, so rescan after renaming.
 - **Odd syntax errors, or npm warnings about "engine"** — check `node -v` is
-  22 or newer.
+  22.14 or newer.
 
 ## Known limitations
 
@@ -597,7 +602,9 @@ touch your real `data/dashboard.db`.
   first drive's projects show as no longer on the SSD.
 - **Settings changes apply at the next scan.** `npm run report` shows the
   scores saved by the last scan, so after editing `config.json` (weights,
-  pins, shared folders…) run `npm run scan` to see the effect.
+  pins, shared folders…) run `npm run scan` to see the effect. (Running
+  `npm run pin` also re-scores every project with your current weights, day
+  counts and pins; folder and file-type settings need a scan.)
 
 ## Project layout
 

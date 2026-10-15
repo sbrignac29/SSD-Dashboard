@@ -13,7 +13,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { DATA_DIR, withDefaults, isInside } = require('../src/config');
 const { scanDrive, ScanError } = require('../src/scanner/scan');
-const { openDatabase, saveScan, togglePin, listProjects, latestScan, DatabaseError, MIGRATIONS } = require('../src/db');
+const fsp = require('node:fs/promises');
+const { openDatabase, saveScan, togglePin, listProjects, latestScan, nodeApiProblem, DatabaseError, MIGRATIONS } = require('../src/db');
 const { scanAndSave } = require('../src/jobs/scanAndSave');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -195,6 +196,25 @@ describe('saving scans', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM projects WHERE missing = 1').get().n, 0);
   });
 
+  it("a container the scan couldn't open keeps its shoots (they aren't marked missing)", async () => {
+    await save(NOW);
+    // Pretend macOS refused to let the scan open "NCHS Football" this time.
+    const realReaddir = fsp.readdir;
+    fsp.readdir = async (dir, ...rest) => {
+      if (path.basename(dir) === 'NCHS Football') throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return realReaddir(dir, ...rest);
+    };
+    let result;
+    try {
+      result = await save(NOW + HOUR);
+    } finally {
+      fsp.readdir = realReaddir;
+    }
+    assert.ok(result.scan.warnings.some((w) => w.includes("Couldn't open container folder")));
+    assert.equal(result.markedMissing, 0);
+    assert.equal(row('NCHS Football/Week 1').missing, 0);
+  });
+
   it('a --root scan (one folder, or another drive) is never saved', async () => {
     const partial = await scanDrive(testConfig(), { root: path.join(ssd, 'NCHS Football'), now: NOW });
     assert.equal(partial.scope, 'partial');
@@ -205,22 +225,40 @@ describe('saving scans', () => {
 
 describe('upgrading the database', () => {
   it('a database made by an earlier version is upgraded in place, keeping its rows', async () => {
-    // Build a version-1 file by hand, the way the first Phase 2 build left it.
+    // Build a version-1 file by hand, the way the first Phase 2 build left
+    // it, with one saved (and pinned) project in it.
     const file = path.join(base, 'from-version-1.db');
     const Database = require('better-sqlite3');
     const old = new Database(file);
     old.exec(MIGRATIONS[0]);
     old.pragma('user_version = 1');
+    const firstSeen = '2026-01-01T00:00:00.000Z';
+    const { lastInsertRowid } = old
+      .prepare(
+        `INSERT INTO projects (path, name, kind, size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes,
+           project_bytes, other_bytes, file_count, has_export, has_final_export, first_seen, last_scanned, pinned_keep)
+         VALUES ('Old Finished', 'Old Finished', 'project', 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, ?, ?, 1)`,
+      )
+      .run(firstSeen, firstSeen);
     old.close();
+
     db.close();
     db = openDatabase({ file }); // upgrades it (afterEach closes it)
     assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length);
-    const columns = db.prepare('PRAGMA table_info(projects)').all().map((c) => c.name);
-    assert.ok(columns.includes('newer_footage_file'));
+    const kept = row('Old Finished');
+    assert.equal(kept.id, Number(lastInsertRowid));
+    assert.equal(kept.newer_footage_file, null);
 
+    // The next scans update that same row, and keep its pin and first_seen.
     await save(NOW);
     await save(NOW + HOUR);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM projects').get().n, 5);
+    const updated = row('Old Finished');
+    assert.equal(updated.id, kept.id);
+    assert.equal(updated.first_seen, firstSeen);
+    assert.equal(updated.size_bytes, 6000);
+    assert.equal(updated.pinned_keep, 1);
+    assert.equal(updated.bucket, 'Keep');
   });
 
   it('a read-only command asks for a scan instead of upgrading', () => {
@@ -251,6 +289,21 @@ describe('safety', () => {
     const link = path.join(base, 'shortcut-out');
     fs.symlinkSync(os.tmpdir(), link);
     assert.throws(() => openDatabase({ file: path.join(link, 'dashboard.db') }), /outside the app's data\/ folder/);
+  });
+
+  it("refuses a database file that is a shortcut, even to a file that doesn't exist yet", () => {
+    // e.g. data/dashboard.db -> /Volumes/BRIGSMEDIA/dashboard.db (not there yet)
+    const target = path.join(os.tmpdir(), `ssd-dashboard-must-not-be-created-${process.pid}-${dbCount}.db`);
+    const link = path.join(base, 'dangling-shortcut.db');
+    fs.symlinkSync(target, link);
+    assert.throws(() => openDatabase({ file: link }), /shortcut \(symlink\)/);
+    assert.equal(fs.existsSync(target), false, 'nothing may be created where the shortcut points');
+  });
+
+  it('explains a too-old Node.js instead of crashing', () => {
+    assert.match(nodeApiProblem('9'), /needs Node 22\.14 or newer/);
+    assert.equal(nodeApiProblem('10'), null);
+    assert.equal(nodeApiProblem(process.versions.napi), null, 'the Node running these tests is new enough');
   });
 
   it('read-only mode never creates a database', () => {
@@ -305,6 +358,49 @@ describe('pins', () => {
     } finally {
       fs.rmSync(path.join(ssd, 'Two Games'), { recursive: true, force: true });
     }
+  });
+
+  it('after a rename that only changes upper/lower case, pin finds the project still on the SSD', async () => {
+    const config = testConfig();
+    await save(NOW);
+    togglePin(db, config, 'Fresh Edit'); // pinned under its old name
+    fs.renameSync(path.join(ssd, 'Fresh Edit'), path.join(ssd, 'fresh edit'));
+    try {
+      await save(NOW + HOUR); // old name: missing (and pinned); new name: a new row
+      const outcome = togglePin(db, config, 'fresh edit');
+      assert.equal(outcome.result, 'pinned');
+      assert.equal(outcome.project.relPath, 'fresh edit');
+      assert.equal(row('fresh edit').pinned_keep, 1);
+    } finally {
+      fs.renameSync(path.join(ssd, 'fresh edit'), path.join(ssd, 'Fresh Edit'));
+    }
+  });
+
+  it("pinning a project that's no longer on the SSD doesn't show its old bucket as current", async () => {
+    const config = testConfig();
+    await save(NOW);
+    const away = path.join(base, 'moved-away-pin');
+    fs.renameSync(path.join(ssd, 'Gone Soon'), away);
+    try {
+      await save(NOW + HOUR);
+      const outcome = togglePin(db, config, 'Gone Soon');
+      assert.equal(outcome.result, 'pinned');
+      assert.equal(outcome.project.missing, true);
+      assert.equal(outcome.project.scoring, null);
+    } finally {
+      fs.renameSync(away, path.join(ssd, 'Gone Soon'));
+    }
+  });
+
+  it('a project newly pinned in config.json shows as Keep after npm run pin', async () => {
+    await save(NOW);
+    assert.equal(row('Old Finished').bucket, 'Ready');
+    const edited = testConfig({ keepPinned: ['Old Finished'] }); // config.json edited after the scan
+    const outcome = togglePin(db, edited, 'Old Finished');
+    assert.equal(outcome.result, 'pinned-in-config');
+    assert.equal(outcome.project.scoring.bucket, 'Keep');
+    assert.equal(row('Old Finished').bucket, 'Keep');
+    assert.equal(row('Old Finished').pinned_keep, 0);
   });
 
   it('pinning changes only the pinned project', async () => {

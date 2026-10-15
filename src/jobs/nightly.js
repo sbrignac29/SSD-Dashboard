@@ -51,9 +51,12 @@ function scheduleNightlyScan({ schedule = NIGHTLY_SCHEDULE, run = runSavedScan, 
   async function nightlyScan() {
     try {
       const result = await run();
+      // added / markedMissing count shared folders too, so name both totals.
+      const count = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
       log.info(
-        `Nightly scan saved: ${result.projects.length} projects ` +
-          `(${result.added} new, ${result.markedMissing} no longer found).`,
+        `Nightly scan saved: ${count(result.scan.projects.length, 'project')} + ` +
+          `${count(result.scan.shared.length, 'shared folder')} ` +
+          `(${result.added} new, ${result.markedMissing} no longer on the Working SSD).`,
       );
     } catch (error) {
       // A failed night (SSD unplugged, bad config.json) must never crash the

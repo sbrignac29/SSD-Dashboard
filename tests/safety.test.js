@@ -38,7 +38,9 @@ const FORBIDDEN_PATTERNS = [
   // Looked up by name: fsp['rm']
   new RegExp(`\\[\\s*['"\`]${NAMES}['"\`]\\s*\\]`, 'g'),
   // Pulled out of a module: const { rm } = ...  /  { rename: move }
-  new RegExp(`[{,]\\s*${NAMES}\\s*[:,}]`, 'g'),
+  // (The closing , : or } is only looked at, not used up, so it can also start
+  // the next match: in { mkdir, rm } both names are found.)
+  new RegExp(`[{,]\\s*${NAMES}\\s*(?=[:,}])`, 'g'),
   // Running other programs (e.g. `rm -rf`) is just as dangerous.
   /\b(require|import)\s*\(\s*['"`](node:)?child_process/g,
   /\bfrom\s+['"`](node:)?child_process/g,
@@ -128,6 +130,9 @@ test("an allowed name doesn't let anything else through", () => {
     'fs.mkdirSync(a); fs.renameSync(a, b)',
     'fs.mkdirSync(DATA_DIR); fsp.unlink(file)',
     'fs.rmdirSync(DATA_DIR)',
+    'const { mkdirSync, rmSync: removeEverything } = require("node:fs")',
+    'const { mkdir, unlink } = require("node:fs/promises")',
+    'const { mkdirSync, rmSync } = require("node:fs")',
   ];
   for (const code of sneaky) {
     assert.notDeepEqual(findProblems(code, allowed), [], `should have been caught: ${code}`);

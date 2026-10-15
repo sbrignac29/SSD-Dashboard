@@ -112,7 +112,7 @@ function isPinnedByConfig(relPath, keepPinned) {
 // Paths are always written from the top of the SSD, so the folder lists in
 // your config match the same way in both cases.
 async function planScan(root, lists, prefix) {
-  const plan = { targets: [], looseFiles: [], skipped: [], hiddenCount: 0, warnings: [], seenKeys: new Set() };
+  const plan = { targets: [], looseFiles: [], skipped: [], hiddenCount: 0, warnings: [], unreadable: [], seenKeys: new Set() };
 
   let entries;
   try {
@@ -142,6 +142,7 @@ async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
   }
   if (entry.error) {
     plan.warnings.push(`Couldn't look at "${relPath}" (${entry.error.code || entry.error.message}).`);
+    plan.unreadable.push(relPath);
     return;
   }
   if (matchesSelfOrAncestor(segments, lists.ignore)) {
@@ -176,6 +177,7 @@ async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
       children = await statEntries(absPath);
     } catch (error) {
       plan.warnings.push(`Couldn't open container folder "${relPath}" (${error.code || error.message}).`);
+      plan.unreadable.push(relPath);
       return;
     }
     for (const child of children) {
@@ -492,6 +494,9 @@ async function scanDrive(config, { root = config.drives.working, now = Date.now(
     skipped: plan.skipped,
     hiddenCount: plan.hiddenCount,
     warnings,
+    // Folders (paths from the top of the drive) that couldn't be opened or
+    // looked at, so nothing is known about what's inside them this time.
+    unreadable: plan.unreadable,
     filesScanned: progress.filesScanned,
   };
 }
