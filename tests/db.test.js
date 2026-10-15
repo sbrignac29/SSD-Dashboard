@@ -14,7 +14,17 @@ const path = require('node:path');
 const { DATA_DIR, withDefaults, isInside } = require('../src/config');
 const { scanDrive, ScanError } = require('../src/scanner/scan');
 const fsp = require('node:fs/promises');
-const { openDatabase, saveScan, togglePin, listProjects, latestScan, nodeApiProblem, DatabaseError, MIGRATIONS } = require('../src/db');
+const {
+  openDatabase,
+  saveScan,
+  togglePin,
+  togglePinById,
+  listProjects,
+  latestScan,
+  nodeApiProblem,
+  DatabaseError,
+  MIGRATIONS,
+} = require('../src/db');
 const { scanAndSave } = require('../src/jobs/scanAndSave');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -168,6 +178,11 @@ describe('saving scans', () => {
     assert.equal(old.final_export_file, 'Exports/final.mp4');
     assert.equal(old.last_modified, new Date(NOW - 200 * DAY).toISOString());
     assert.equal(old.last_nle_save, null);
+    assert.equal(old.drive, 'working');
+    assert.deepEqual(JSON.parse(old.subfolders), [
+      { path: 'Footage', sizeBytes: 5000, fileCount: 1 },
+      { path: 'Exports', sizeBytes: 1000, fileCount: 1 },
+    ]);
     assert.equal(old.score, 86.5);
     assert.equal(old.bucket, 'Ready');
 
@@ -276,6 +291,47 @@ describe('upgrading the database', () => {
     assert.equal(updated.size_bytes, 6000);
     assert.equal(updated.pinned_keep, 1);
     assert.equal(updated.bucket, 'Keep');
+  });
+
+  it('upgrading a version-2 database (Phase 2) keeps ids, pins and the move log', async () => {
+    const file = path.join(base, 'from-version-2.db');
+    const Database = require('better-sqlite3');
+    const old = new Database(file);
+    old.exec(MIGRATIONS[0]);
+    old.exec(MIGRATIONS[1]);
+    old.pragma('user_version = 2');
+    const seen = '2026-01-01T00:00:00.000Z';
+    old
+      .prepare(
+        `INSERT INTO projects (id, path, name, kind, size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes,
+           project_bytes, other_bytes, file_count, has_export, has_final_export, first_seen, last_scanned, pinned_keep,
+           score, bucket, newer_footage_file)
+         VALUES (7, 'Old Finished', 'Old Finished', 'project', 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, ?, ?, 1, 50, 'Keep', 'x.mov')`,
+      )
+      .run(seen, seen);
+    // A (future) move log row pointing at that project must survive the table rebuild.
+    old
+      .prepare(`INSERT INTO archive_log (archived_at, project_id, project_path, destination_drive) VALUES (?, 7, 'Old Finished', 'library')`)
+      .run(seen);
+    old.prepare(`INSERT INTO scans (started_at, finished_at, status, root) VALUES (?, ?, 'finished', '/Volumes/BRIGSMEDIA')`).run(seen, seen);
+    old.close();
+
+    db.close();
+    db = openDatabase({ file });
+    assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length);
+    assert.equal(db.pragma('foreign_keys', { simple: true }), 1, 'foreign keys are back on after upgrading');
+    assert.deepEqual(db.pragma('foreign_key_check'), []);
+    const kept = row('Old Finished');
+    assert.deepEqual(
+      [kept.id, kept.drive, kept.pinned_keep, kept.score, kept.bucket, kept.newer_footage_file, kept.subfolders],
+      [7, 'working', 1, 50, 'Keep', 'x.mov', '[]'],
+    );
+    assert.equal(db.prepare('SELECT project_id FROM archive_log').get().project_id, 7);
+    assert.equal(latestScan(db, 'finished').drive, 'working', 'old scans count as Working SSD scans');
+
+    await save(NOW);
+    assert.equal(row('Old Finished').id, 7, 'the next scan updates the same row');
+    assert.equal(row('Old Finished').pinned_keep, 1);
   });
 
   it('a read-only command asks for a scan instead of upgrading', () => {
@@ -471,5 +527,94 @@ describe('pins', () => {
 
     assert.equal(togglePin(db, config, 'Resolve Project Library').result, 'shared');
     assert.equal(listProjects(db).filter((p) => p.pinnedInDatabase).length, 0);
+  });
+});
+
+describe('the Library HDD (the Done HDD page)', () => {
+  let library;
+
+  // Creates a file on the fake Library.
+  function libraryFile(rel, size, ageDays) {
+    const abs = path.join(library, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, Buffer.alloc(size));
+    const time = new Date(NOW - ageDays * DAY);
+    fs.utimesSync(abs, time, time);
+  }
+
+  before(() => {
+    library = path.join(base, 'library');
+    // The same path as a Working SSD project: a copy moved to the Library earlier.
+    libraryFile('Old Finished/Footage/a.mov', 5000, 300);
+    libraryFile('Homecoming/Footage/a.mov', 2000, 400);
+    libraryFile('Resolve Project Library/old.db', 10, 100);
+  });
+
+  function bothDrives() {
+    return withDefaults({ ...testConfig(), drives: { working: ssd, library, archive: '' } });
+  }
+
+  it('a whole-Library scan is saved next to the Working SSD rows, unscored', async () => {
+    const config = bothDrives();
+    await save(NOW, config);
+    const result = await scanAndSave({ config, db, drive: 'library', now: NOW + HOUR });
+    assert.equal(result.drive, 'library');
+    assert.deepEqual(result.projects.map((p) => p.relPath).sort(), ['Homecoming', 'Old Finished']);
+
+    const rows = db.prepare("SELECT drive, bucket, missing FROM projects WHERE path = 'Old Finished' ORDER BY drive").all();
+    assert.deepEqual(rows, [
+      { drive: 'library', bucket: null, missing: 0 }, // Library projects aren't scored
+      { drive: 'working', bucket: 'Ready', missing: 0 }, // and the SSD row is untouched
+    ]);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects WHERE drive = 'working' AND missing = 1").get().n, 0);
+
+    const libraryScan = latestScan(db, 'finished', { drive: 'library' });
+    assert.equal(libraryScan.projectCount, 2);
+    assert.ok(libraryScan.driveSpace.totalBytes > 0, 'how full the drive was is saved with the scan');
+    assert.equal(latestScan(db, 'finished').drive, 'working', 'the SSD report still reads the SSD scan');
+    assert.deepEqual(listProjects(db).map((p) => p.drive).filter((d) => d !== 'working'), [], 'listProjects() is the SSD');
+  });
+
+  it("a project gone from the Library is marked missing there only", async () => {
+    const config = bothDrives();
+    await save(NOW, config);
+    await scanAndSave({ config, db, drive: 'library', now: NOW });
+    const away = path.join(base, 'archived-away');
+    fs.renameSync(path.join(library, 'Old Finished'), away);
+    try {
+      const result = await scanAndSave({ config, db, drive: 'library', now: NOW + HOUR });
+      assert.equal(result.markedMissing, 1);
+      const rows = db.prepare("SELECT drive, missing FROM projects WHERE path = 'Old Finished' ORDER BY drive").all();
+      assert.deepEqual(rows, [
+        { drive: 'library', missing: 1 },
+        { drive: 'working', missing: 0 },
+      ]);
+    } finally {
+      fs.renameSync(away, path.join(library, 'Old Finished'));
+    }
+  });
+
+  it('a scan of one Library folder is never saved', async () => {
+    const partial = await scanDrive(bothDrives(), { root: path.join(library, 'Old Finished'), now: NOW });
+    assert.equal(partial.drive, 'library');
+    assert.equal(partial.wholeDrive, false);
+    assert.throws(() => saveScan(db, partial, bothDrives()), /Only full scans of the Working SSD or the Library HDD/);
+  });
+
+  it('pins are for Working SSD projects (the Pin button checks)', async () => {
+    const config = bothDrives();
+    await save(NOW, config);
+    await scanAndSave({ config, db, drive: 'library', now: NOW });
+    const libraryRow = db.prepare("SELECT id FROM projects WHERE drive = 'library' AND path = 'Old Finished'").get();
+    assert.equal(togglePinById(db, config, libraryRow.id).result, 'not-on-working');
+    assert.equal(togglePinById(db, config, 99999).result, 'not-found');
+    assert.equal(togglePinById(db, config, row('Old Finished').id).result, 'pinned');
+    assert.equal(row('Old Finished').bucket, 'Keep');
+  });
+
+  it('scanning the Library changes nothing on it', async () => {
+    const before = snapshot(library);
+    await scanAndSave({ config: bothDrives(), db, drive: 'library', now: NOW });
+    assert.deepEqual(snapshot(library), before);
   });
 });

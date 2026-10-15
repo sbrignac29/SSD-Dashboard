@@ -25,6 +25,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const FUTURE_SLACK_MS = DAY_MS;
 // One broken folder shouldn't flood the report with hundreds of warnings.
 const MAX_WARNINGS_PER_FOLDER = 10;
+// The folder tree on the dashboard's project page: subfolders down to this
+// many levels inside the project, and at most this many of them (the biggest).
+const SUBFOLDER_DEPTH = 3;
+const MAX_SUBFOLDERS = 300;
 
 class ScanError extends Error {}
 
@@ -230,6 +234,9 @@ function newFacts(target) {
     skippedLinks: 0,
     incomplete: false, // true if some folder or file inside couldn't be read
     pinnedKeep: false,
+    // The biggest subfolders: [{ path: 'Footage/Card 1', sizeBytes, fileCount }],
+    // biggest first (see SUBFOLDER_DEPTH).
+    subfolders: [],
     warnings: [],
     warningsDropped: 0,
   };
@@ -258,6 +265,12 @@ function recordFile(facts, tracking, name, dir, stats, classifier, now) {
   facts.fileCount += 1;
   facts.sizeBytes += stats.size;
   facts.diskBytes += diskUsage(stats);
+  // Add the file to every folder above it that's in the folder tree.
+  for (const folderPath of dir.treePaths) {
+    const folder = tracking.subfolders.get(folderPath);
+    folder.sizeBytes += stats.size;
+    folder.fileCount += 1;
+  }
   facts.bytesByType[category] += stats.size;
   facts.filesByType[category] += 1;
   if (category === 'export' && !facts.hasExport) {
@@ -322,12 +335,30 @@ function settleFinalExport(facts, tracking) {
   if (footage && footage.ms > final.ms + DAY_MS) facts.newerFootageFile = footage.file;
 }
 
+// Keeps the biggest subfolders. A folder is always at least as big as any
+// folder inside it, so sorting by size (and parents first on a tie) keeps
+// every kept folder's parent too: the tree has no gaps.
+function biggestSubfolders(subfolders) {
+  const depth = (folder) => folder.path.split('/').length;
+  return [...subfolders.values()]
+    .sort((a, b) => b.sizeBytes - a.sizeBytes || depth(a) - depth(b) || a.path.localeCompare(b.path))
+    .slice(0, MAX_SUBFOLDERS);
+}
+
 async function scanFolder(target, { classifier, now, onProgress, progress, root }) {
   const facts = newFacts(target);
-  const tracking = { finalVideo: null, finalPhoto: null, rawVideo: null, rawPhoto: null, anyRawVideo: false };
+  const tracking = {
+    finalVideo: null,
+    finalPhoto: null,
+    rawVideo: null,
+    rawPhoto: null,
+    anyRawVideo: false,
+    subfolders: new Map(), // 'Footage/Card 1' -> { path, sizeBytes, fileCount }
+  };
   // The "stack" is a to-do list of folders still to look inside. We take one
   // off, list it, and add any subfolders we find back onto the list.
-  const stack = [{ absPath: target.absPath, folders: [], context: classifier.rootContext(target.segments) }];
+  // treePaths: the folders in the folder tree that this folder is inside (or is).
+  const stack = [{ absPath: target.absPath, folders: [], treePaths: [], context: classifier.rootContext(target.segments) }];
 
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -358,9 +389,17 @@ async function scanFolder(target, { classifier, now, onProgress, progress, root 
         facts.skippedLinks += 1;
       } else if (stats.isDirectory()) {
         facts.folderCount += 1;
+        const folders = [...dir.folders, entry.name];
+        let { treePaths } = dir;
+        if (folders.length <= SUBFOLDER_DEPTH) {
+          const folderPath = folders.join('/');
+          tracking.subfolders.set(folderPath, { path: folderPath, sizeBytes: 0, fileCount: 0 });
+          treePaths = [...treePaths, folderPath];
+        }
         stack.push({
           absPath: path.join(dir.absPath, entry.name),
-          folders: [...dir.folders, entry.name],
+          folders,
+          treePaths,
           context: classifier.childContext(dir.context, entry.name),
         });
       } else if (stats.isFile()) {
@@ -372,6 +411,7 @@ async function scanFolder(target, { classifier, now, onProgress, progress, root 
   }
 
   settleFinalExport(facts, tracking);
+  facts.subfolders = biggestSubfolders(tracking.subfolders);
   if (facts.futureDatedFiles > 0) {
     addWarning(
       facts,
@@ -434,7 +474,9 @@ async function locateOnDrives(root, config) {
 //                Can be a folder inside any of the drives
 //                (npm run scan -- --root ...) or anywhere else.
 //   now        – the time to measure "future-dated" against (tests pass a fixed time)
-//   onProgress – called after each folder with { name, filesScanned }
+//   onProgress – called after each folder with { name, filesScanned, foldersDone, foldersTotal }
+//                (foldersDone/Total count the top-level project and shared folders,
+//                for a progress bar)
 async function scanDrive(config, { root = config.drives.working, now = Date.now(), onProgress = () => {} } = {}) {
   root = path.resolve(root);
 
@@ -464,10 +506,13 @@ async function scanDrive(config, { root = config.drives.working, now = Date.now(
   const projects = [];
   const shared = [];
 
-  for (const target of plan.targets) {
-    const facts = await scanFolder(target, { classifier, now, onProgress, progress, root });
+  const foldersTotal = plan.targets.length;
+  for (const [index, target] of plan.targets.entries()) {
+    const reportProgress = (update) => onProgress({ ...update, foldersDone: index, foldersTotal });
+    const facts = await scanFolder(target, { classifier, now, onProgress: reportProgress, progress, root });
     facts.pinnedKeep = matchesSelfOrAncestor(target.segments, lists.keepPinned);
     (target.kind === 'shared' ? shared : projects).push(facts);
+    onProgress({ name: target.name, filesScanned: progress.filesScanned, foldersDone: index + 1, foldersTotal });
   }
   // One last check: if the drive vanished while the final folders were being
   // read, their files would just look missing.

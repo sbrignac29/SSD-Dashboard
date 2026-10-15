@@ -9,6 +9,12 @@
     "targetPercent": 70
   },
 
+  "server": {
+    "port": 7744,
+    "host": "127.0.0.1",
+    "nightlyScan": false
+  },
+
   "ageDays": {
     "recent": 14,
     "max": 120

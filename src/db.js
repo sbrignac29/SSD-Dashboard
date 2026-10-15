@@ -1,7 +1,7 @@
 'use strict';
 
 // The database: saves scan results so they can be shown again without
-// re-scanning the SSD (`npm run report`, and the dashboard in Phase 3).
+// re-scanning the drives (`npm run report`, and the dashboard: `npm start`).
 //
 // SQLite is a whole database inside ONE file: data/dashboard.db. You can open
 // that file yourself with "DB Browser for SQLite" (see the README).
@@ -117,7 +117,81 @@ const MIGRATIONS = [
   `
   ALTER TABLE projects ADD COLUMN newer_footage_file TEXT;  -- media newer than the final export (blocks Ready)
   `,
+
+  // 3 — Phase 3, the dashboard:
+  //   - the Library HDD is saved too (the Done HDD page). Its projects have the
+  //     same paths as their old Working SSD rows, so a row is now identified by
+  //     (drive, path) instead of path alone. SQLite can't change a UNIQUE rule
+  //     in place, so this step rebuilds the table the way SQLite's manual
+  //     describes: new table, copy every row (same ids), drop the old one,
+  //     rename the new one. Foreign keys are off while it runs (see migrate()).
+  //   - subfolders: each project's biggest folders, for the folder tree
+  //   - scans remember which drive they read and how full it was, so the
+  //     dashboard can show an unplugged drive's last-known space
+  `
+  CREATE TABLE projects_v3 (
+    id                 INTEGER PRIMARY KEY,
+    drive              TEXT    NOT NULL DEFAULT 'working' CHECK (drive IN ('working', 'library', 'archive')),
+    path               TEXT    NOT NULL,         -- from the top of the drive, e.g. 'NCHS Football/Week 1'
+    name               TEXT    NOT NULL,
+    kind               TEXT    NOT NULL CHECK (kind IN ('project', 'shared')),
+    client             TEXT,
+    size_bytes         INTEGER NOT NULL,
+    raw_bytes          INTEGER NOT NULL,
+    proxy_bytes        INTEGER NOT NULL,
+    export_bytes       INTEGER NOT NULL,
+    cache_bytes        INTEGER NOT NULL,
+    project_bytes      INTEGER NOT NULL,
+    other_bytes        INTEGER NOT NULL,
+    file_count         INTEGER NOT NULL,
+    last_modified      TEXT,
+    last_modified_file TEXT,
+    last_nle_save      TEXT,
+    last_nle_save_file TEXT,
+    has_export         INTEGER NOT NULL CHECK (has_export IN (0, 1)),
+    export_file        TEXT,
+    has_final_export   INTEGER NOT NULL CHECK (has_final_export IN (0, 1)),
+    final_export_file  TEXT,
+    newer_footage_file TEXT,
+    future_dated_files INTEGER NOT NULL DEFAULT 0,
+    incomplete         INTEGER NOT NULL DEFAULT 0 CHECK (incomplete IN (0, 1)),
+    subfolders         TEXT    NOT NULL DEFAULT '[]',  -- JSON: [{"path","sizeBytes","fileCount"}], biggest first
+    score              REAL,
+    bucket             TEXT    CHECK (bucket IN ('Ready', 'Review', 'Keep')),  -- Working SSD rows only
+    score_notes        TEXT,
+    pinned_keep        INTEGER NOT NULL DEFAULT 0 CHECK (pinned_keep IN (0, 1)),
+    first_seen         TEXT    NOT NULL,         -- first scan of this drive that found it
+    last_scanned       TEXT    NOT NULL,
+    missing            INTEGER NOT NULL DEFAULT 0 CHECK (missing IN (0, 1)),  -- 1 = no longer on this drive
+    UNIQUE (drive, path)                         -- one row per folder per drive
+  );
+  INSERT INTO projects_v3 (
+    id, drive, path, name, kind, client,
+    size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes, project_bytes, other_bytes,
+    file_count, last_modified, last_modified_file, last_nle_save, last_nle_save_file,
+    has_export, export_file, has_final_export, final_export_file, newer_footage_file, future_dated_files, incomplete,
+    score, bucket, score_notes, pinned_keep, first_seen, last_scanned, missing
+  )
+  SELECT
+    id, 'working', path, name, kind, client,
+    size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes, project_bytes, other_bytes,
+    file_count, last_modified, last_modified_file, last_nle_save, last_nle_save_file,
+    has_export, export_file, has_final_export, final_export_file, newer_footage_file, future_dated_files, incomplete,
+    score, bucket, score_notes, pinned_keep, first_seen, last_scanned, missing
+  FROM projects;
+  DROP TABLE projects;
+  ALTER TABLE projects_v3 RENAME TO projects;
+
+  ALTER TABLE scans ADD COLUMN drive TEXT NOT NULL DEFAULT 'working' CHECK (drive IN ('working', 'library', 'archive'));
+  ALTER TABLE scans ADD COLUMN drive_total_bytes INTEGER;  -- the drive's size at the scan (empty if unknown)
+  ALTER TABLE scans ADD COLUMN drive_free_bytes INTEGER;   -- ... and its free space
+  `,
 ];
+
+// The drives whose folders can be saved: the Working SSD (scored for Move 1)
+// and the Library HDD (listed oldest first for Move 2). The Archive is only
+// measured (how full it is); nothing reads its folders yet.
+const SAVED_DRIVES = ['working', 'library'];
 
 // --- Opening -----------------------------------------------------------------
 
@@ -178,6 +252,10 @@ function assertInsideDataDir(file) {
 }
 
 // Brings an older database file up to the current layout.
+// Runs with foreign keys off (SQLite's rule for rebuilding a table): step 3
+// drops and recreates `projects`, which archive_log points at. Each step then
+// checks that every archive_log row still points at a real project before it
+// commits.
 function migrate(db, { readonly }) {
   const version = db.pragma('user_version', { simple: true });
   if (version > MIGRATIONS.length) {
@@ -191,6 +269,9 @@ function migrate(db, { readonly }) {
     // A transaction: the step either fully happens or not at all.
     db.transaction(() => {
       db.exec(MIGRATIONS[step]);
+      if (db.pragma('foreign_key_check').length > 0) {
+        throw new DatabaseError(`Upgrading the database (step ${step + 1}) would break the move log. Nothing was changed.`);
+      }
       db.pragma(`user_version = ${step + 1}`);
     })();
   }
@@ -226,14 +307,18 @@ function openDatabase({ file = DEFAULT_DB_PATH, readonly = false, mustExist = re
     }
     throw error;
   }
-  // SQLite only enforces REFERENCES (foreign keys) when asked, per connection.
-  db.pragma('foreign_keys = ON');
   try {
+    // better-sqlite3 turns foreign keys ON for every new connection; upgrading
+    // needs them off (see migrate()). This only works outside a transaction.
+    db.pragma('foreign_keys = OFF');
     migrate(db, { readonly });
   } catch (error) {
     db.close();
     throw error;
   }
+  // SQLite only enforces REFERENCES (foreign keys) when asked, per connection.
+  // (Turned on after migrating: see migrate().)
+  db.pragma('foreign_keys = ON');
   return db;
 }
 
@@ -255,6 +340,13 @@ function describeDatabaseError(error) {
         '(or close it), then try again. Tip: open it with "Open Database Read Only" to just look.'
     );
   }
+  if (error?.code === 'SQLITE_READONLY_DBMOVED') {
+    // The file was deleted or renamed while the dashboard had it open.
+    return (
+      `The database file (${displayPath()}) was moved or deleted while the dashboard was running.\n` +
+      'Stop the dashboard (Ctrl+C in its Terminal window) and run `npm start` again.'
+    );
+  }
   return null;
 }
 
@@ -268,11 +360,21 @@ function fromIso(text) {
   return text === null || text === undefined ? null : Date.parse(text);
 }
 
+function parseSubfolders(text) {
+  try {
+    const list = JSON.parse(text ?? '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
 // A database row -> the same shape the scanner and scoring use (sizeBytes,
 // lastEditedMs, ...), so the report and scoring code work on both.
 function rowToProject(row) {
   return {
     id: row.id,
+    drive: row.drive,
     relPath: row.path,
     name: row.name,
     kind: row.kind,
@@ -298,6 +400,7 @@ function rowToProject(row) {
     newerFootageFile: row.newer_footage_file,
     futureDatedFiles: row.future_dated_files,
     incomplete: row.incomplete === 1,
+    subfolders: parseSubfolders(row.subfolders),
     pinnedInDatabase: row.pinned_keep === 1,
     // The score saved by the last scan or pin (shared folders have none).
     scoring: row.bucket ? { score: row.score, bucket: row.bucket, notes: row.score_notes ? [row.score_notes] : [] } : null,
@@ -309,11 +412,12 @@ function rowToProject(row) {
 
 // Everything a scan learned about one folder, as named values for the SQL
 // below (@path, @name, ...).
-function factsToRow(facts, scannedAtIso) {
+function factsToRow(facts, scannedAtIso, drive) {
   // "NCHS Football/Week 1" -> client "NCHS Football". A top-level project has
   // no container, so its client stays empty (Notion can fill it in later).
   const slash = facts.relPath.lastIndexOf('/');
   return {
+    drive,
     path: facts.relPath,
     name: facts.name,
     kind: facts.kind,
@@ -337,15 +441,16 @@ function factsToRow(facts, scannedAtIso) {
     newer_footage_file: facts.newerFootageFile ?? null,
     future_dated_files: facts.futureDatedFiles,
     incomplete: facts.incomplete ? 1 : 0,
+    subfolders: JSON.stringify(facts.subfolders ?? []),
     scanned_at: scannedAtIso,
   };
 }
 
 // --- Saving a scan -----------------------------------------------------------
 
-// "Upsert" = insert, or update if it's already there. ON CONFLICT (path) is
-// the "already there" case: the path is UNIQUE, so instead of adding a second
-// row, SQLite updates the existing one.
+// "Upsert" = insert, or update if it's already there. ON CONFLICT (drive, path)
+// is the "already there" case: each folder has one row per drive (UNIQUE), so
+// instead of adding a second row, SQLite updates the existing one.
 //
 // Columns the update leaves alone, on purpose:
 //   pinned_keep – your pin survives every rescan
@@ -354,19 +459,19 @@ function factsToRow(facts, scannedAtIso) {
 // Scores are cleared here and recalculated right after (same transaction).
 const UPSERT_PROJECT_SQL = `
   INSERT INTO projects (
-    path, name, kind, client,
+    drive, path, name, kind, client,
     size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes, project_bytes, other_bytes,
     file_count, last_modified, last_modified_file, last_nle_save, last_nle_save_file,
     has_export, export_file, has_final_export, final_export_file, newer_footage_file, future_dated_files, incomplete,
-    first_seen, last_scanned, missing
+    subfolders, first_seen, last_scanned, missing
   ) VALUES (
-    @path, @name, @kind, @client,
+    @drive, @path, @name, @kind, @client,
     @size_bytes, @raw_bytes, @proxy_bytes, @export_bytes, @cache_bytes, @project_bytes, @other_bytes,
     @file_count, @last_modified, @last_modified_file, @last_nle_save, @last_nle_save_file,
     @has_export, @export_file, @has_final_export, @final_export_file, @newer_footage_file, @future_dated_files, @incomplete,
-    @scanned_at, @scanned_at, 0
+    @subfolders, @scanned_at, @scanned_at, 0
   )
-  ON CONFLICT (path) DO UPDATE SET
+  ON CONFLICT (drive, path) DO UPDATE SET
     name = excluded.name,
     kind = excluded.kind,
     client = COALESCE(excluded.client, projects.client),
@@ -389,6 +494,7 @@ const UPSERT_PROJECT_SQL = `
     newer_footage_file = excluded.newer_footage_file,
     future_dated_files = excluded.future_dated_files,
     incomplete = excluded.incomplete,
+    subfolders = excluded.subfolders,
     score = NULL,
     bucket = NULL,
     score_notes = NULL,
@@ -410,29 +516,44 @@ function scanMessages(scan) {
   return messages;
 }
 
-// Saves one full scan of the Working SSD (the result of scanDrive) and re-scores.
-// All of it happens in one transaction: if anything fails partway, SQLite
-// undoes the whole save, so the database never holds half a scan.
+// Which drive a scan can be saved as: 'working' or 'library' for a scan of
+// that WHOLE drive, otherwise null. A scan of one folder (`--root`), of the
+// Archive, or of a folder on no drive only saw part of the picture: saving it
+// would mark everything it didn't see as missing.
+function savableDrive(scan) {
+  if (scan.scope === 'working') return 'working';
+  if (scan.drive === 'library' && scan.wholeDrive) return 'library';
+  return null;
+}
+
+// Saves one full scan of the Working SSD or the Library HDD (the result of
+// scanDrive). Working SSD scans are re-scored; Library projects aren't scored
+// (Move 2 just goes oldest first). All of it happens in one transaction: if
+// anything fails partway, SQLite undoes the whole save, so the database never
+// holds half a scan.
+//   space – the drive's { totalBytes, freeBytes } at the scan (from space.js), or null
 //
-// Returns { scanId, projects (scored, with pins), added, updated, returned, markedMissing }.
-function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
-  // A --root scan only saw one folder (or another drive). Saving it would
-  // mark every project it didn't see as missing, so it's refused.
-  if (scan.scope !== 'working') {
-    throw new Error('Only full scans of the Working SSD can be saved (this scan covered one folder or another drive).');
+// Returns { scanId, drive, projects, added, updated, returned, markedMissing }:
+// `projects` are the scored Working SSD projects (with pins), or the Library's projects.
+function saveScan(db, scan, config, { finishedAt = Date.now(), space = null } = {}) {
+  const drive = savableDrive(scan);
+  if (!drive) {
+    throw new Error(
+      'Only full scans of the Working SSD or the Library HDD can be saved (this scan covered one folder or another drive).',
+    );
   }
   const scannedAtIso = toIso(scan.scannedAt);
-  const findExisting = db.prepare('SELECT missing FROM projects WHERE path = ?');
+  const findExisting = db.prepare('SELECT missing FROM projects WHERE drive = ? AND path = ?');
   const upsert = db.prepare(UPSERT_PROJECT_SQL);
   const counts = { added: 0, updated: 0, returned: 0, markedMissing: 0 };
 
   const save = db.transaction(() => {
     for (const facts of [...scan.projects, ...scan.shared]) {
-      const existing = findExisting.get(facts.relPath);
+      const existing = findExisting.get(drive, facts.relPath);
       if (!existing) counts.added += 1;
       else if (existing.missing === 1) counts.returned += 1;
       else counts.updated += 1;
-      upsert.run(factsToRow(facts, scannedAtIso));
+      upsert.run(factsToRow(facts, scannedAtIso, drive));
     }
 
     // Anything this scan didn't see is marked missing. Never deleted.
@@ -448,7 +569,8 @@ function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
     };
     const markMissing = db.prepare('UPDATE projects SET missing = 1 WHERE id = ?');
     const markIncomplete = db.prepare('UPDATE projects SET incomplete = 1 WHERE id = ?');
-    for (const row of db.prepare('SELECT id, path FROM projects WHERE missing = 0 AND last_scanned <> ?').all(scannedAtIso)) {
+    const notSeen = db.prepare('SELECT id, path FROM projects WHERE drive = ? AND missing = 0 AND last_scanned <> ?');
+    for (const row of notSeen.all(drive, scannedAtIso)) {
       if (insideUnreadable(row.path)) {
         markIncomplete.run(row.id);
         continue;
@@ -457,25 +579,32 @@ function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
       counts.markedMissing += 1;
     }
 
-    const scored = rescoreProjects(db, config, scan.scannedAt);
+    const projects =
+      drive === 'working'
+        ? rescoreProjects(db, config, scan.scannedAt)
+        : listProjects(db, { drive }).filter((p) => p.kind === 'project' && !p.missing);
 
     const allBytes =
       sum(scan.projects, (p) => p.sizeBytes) + sum(scan.shared, (p) => p.sizeBytes) + sum(scan.looseFiles, (f) => f.sizeBytes);
     const { lastInsertRowid } = db
       .prepare(
-        `INSERT INTO scans (started_at, finished_at, status, root, project_count, file_count, total_bytes, errors)
-         VALUES (?, ?, 'finished', ?, ?, ?, ?, ?)`,
+        `INSERT INTO scans (started_at, finished_at, status, drive, root, project_count, file_count, total_bytes, errors,
+                            drive_total_bytes, drive_free_bytes)
+         VALUES (?, ?, 'finished', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         scannedAtIso,
         toIso(finishedAt),
+        drive,
         scan.root,
         scan.projects.length,
         scan.filesScanned + scan.looseFiles.length,
         allBytes,
         JSON.stringify(scanMessages(scan)),
+        space?.totalBytes ?? null,
+        space?.freeBytes ?? null,
       );
-    return { scanId: Number(lastInsertRowid), projects: scored };
+    return { scanId: Number(lastInsertRowid), drive, projects };
   });
 
   // .immediate() claims the right to write at the start. If another program
@@ -487,10 +616,10 @@ function saveScan(db, scan, config, { finishedAt = Date.now() } = {}) {
 // Records a scan that failed (e.g. the SSD wasn't plugged in at 2 AM), so
 // you can see it was attempted. Projects are left exactly as they were: a
 // failed scan never marks anything missing.
-function recordFailedScan(db, { root, startedAt, finishedAt = Date.now(), error }) {
+function recordFailedScan(db, { root, startedAt, finishedAt = Date.now(), error, drive = 'working' }) {
   db.prepare(
-    `INSERT INTO scans (started_at, finished_at, status, root, errors) VALUES (?, ?, 'failed', ?, ?)`,
-  ).run(toIso(startedAt), toIso(finishedAt), root, JSON.stringify([String(error?.message ?? error)]));
+    `INSERT INTO scans (started_at, finished_at, status, drive, root, errors) VALUES (?, ?, 'failed', ?, ?, ?)`,
+  ).run(toIso(startedAt), toIso(finishedAt), drive, root, JSON.stringify([String(error?.message ?? error)]));
 }
 
 // --- Scoring what's saved ----------------------------------------------------
@@ -504,7 +633,7 @@ function recordFailedScan(db, { root, startedAt, finishedAt = Date.now(), error 
 // Returns the scored projects.
 function rescoreProjects(db, config, now = latestScanTime(db)) {
   const projects = db
-    .prepare("SELECT * FROM projects WHERE kind = 'project' AND missing = 0")
+    .prepare("SELECT * FROM projects WHERE drive = 'working' AND kind = 'project' AND missing = 0")
     .all()
     .map((row) => {
       const project = rowToProject(row);
@@ -525,23 +654,30 @@ function rescoreProjects(db, config, now = latestScanTime(db)) {
 
 // --- Reading -----------------------------------------------------------------
 
-// The most recent scan row: `status` 'finished' or 'failed', or leave it out
-// for the most recent of either. Returns undefined if there are none.
-function latestScan(db, status) {
+// The most recent scan row of one drive (the Working SSD unless `drive` says
+// otherwise): `status` 'finished' or 'failed', or leave it out for the most
+// recent of either. Returns undefined if there are none.
+function latestScan(db, status, { drive = 'working' } = {}) {
   const row = status
-    ? db.prepare('SELECT * FROM scans WHERE status = ? ORDER BY id DESC LIMIT 1').get(status)
-    : db.prepare('SELECT * FROM scans ORDER BY id DESC LIMIT 1').get();
+    ? db.prepare('SELECT * FROM scans WHERE drive = ? AND status = ? ORDER BY id DESC LIMIT 1').get(drive, status)
+    : db.prepare('SELECT * FROM scans WHERE drive = ? ORDER BY id DESC LIMIT 1').get(drive);
   if (!row) return undefined;
   return {
     id: row.id,
     startedMs: fromIso(row.started_at),
     finishedMs: fromIso(row.finished_at),
     status: row.status,
+    drive: row.drive,
     root: row.root,
     projectCount: row.project_count,
     fileCount: row.file_count,
     totalBytes: row.total_bytes,
     errors: JSON.parse(row.errors),
+    // How full the drive was at the scan, or null for older scans / failed ones.
+    driveSpace:
+      row.drive_total_bytes === null || row.drive_total_bytes === undefined || row.drive_free_bytes === null
+        ? null
+        : { totalBytes: row.drive_total_bytes, freeBytes: row.drive_free_bytes },
   };
 }
 
@@ -549,12 +685,19 @@ function latestScanTime(db) {
   return latestScan(db, 'finished')?.startedMs ?? Date.now();
 }
 
-// Every saved project and shared folder, including missing ones.
-function listProjects(db) {
-  return db.prepare('SELECT * FROM projects ORDER BY name').all().map(rowToProject);
+// Every saved project and shared folder of one drive (the Working SSD unless
+// `drive` says otherwise), including missing ones.
+function listProjects(db, { drive = 'working' } = {}) {
+  return db.prepare('SELECT * FROM projects WHERE drive = ? ORDER BY name').all(drive).map(rowToProject);
 }
 
-// Finds a project by its name as the report shows it ("NCHS Football /
+// One saved row by its id (any drive), or undefined.
+function getProject(db, id) {
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  return row ? rowToProject(row) : undefined;
+}
+
+// Finds a Working SSD project by its name as the report shows it ("NCHS Football /
 // Week 1") or its path ("NCHS Football/Week 1"), ignoring upper/lower case.
 // Returns { project } or, if there's no exact match, { suggestions }: names
 // that contain what you typed.
@@ -575,8 +718,8 @@ function findProject(db, typedName) {
 
 // --- Pins --------------------------------------------------------------------
 
-// `npm run pin`: flips your pin on one project and re-scores. Returns what
-// happened, for the command to explain:
+// `npm run pin`: flips your pin on one Working SSD project and re-scores.
+// Returns what happened, for the command to explain:
 //   { result: 'pinned' | 'unpinned', project (re-scored), stillPinnedByConfig }
 //   { result: 'pinned-in-config', project } – pinned in config.json; the app never edits that file
 //                                             (re-scores, so the saved bucket shows that pin too)
@@ -616,12 +759,23 @@ function togglePin(db, config, typedName) {
   };
 }
 
+// The dashboard's Pin button: the same as `npm run pin` for the project with
+// this id (a Working SSD row). Found by its path, so it follows the same rules
+// (e.g. after a case-only rename, the row still on the SSD gets the pin).
+// Returns togglePin()'s result, or { result: 'not-found' } / { result: 'not-on-working' }.
+function togglePinById(db, config, id) {
+  const project = getProject(db, id);
+  if (!project) return { result: 'not-found', suggestions: [] };
+  if (project.drive !== 'working') return { result: 'not-on-working', project };
+  return togglePin(db, config, project.relPath);
+}
+
 // Paths you've pinned with `npm run pin`, as folderKey()s. Used by `--root`
 // scans, which aren't saved but should still respect your pins.
 function pinnedPathKeys(db) {
   return new Set(
     db
-      .prepare('SELECT path FROM projects WHERE pinned_keep = 1')
+      .prepare("SELECT path FROM projects WHERE drive = 'working' AND pinned_keep = 1")
       .all()
       .map((row) => folderKey(row.path)),
   );
@@ -635,12 +789,16 @@ module.exports = {
   displayPath,
   describeDatabaseError,
   saveScan,
+  savableDrive,
   recordFailedScan,
   rescoreProjects,
   latestScan,
   listProjects,
+  getProject,
   findProject,
   togglePin,
+  togglePinById,
   pinnedPathKeys,
   MIGRATIONS,
+  SAVED_DRIVES,
 };

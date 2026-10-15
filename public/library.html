@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Done HDD · SSD Offload</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      try {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+    <script src="js/common.js" defer></script>
+    <script src="js/library.js" defer></script>
+    <script src="vendor/alpine.min.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">SSD Offload</a>
+        <nav aria-label="Pages">
+          <a href="/">Overview</a>
+          <a href="library.html" aria-current="page">Done HDD</a>
+        </nav>
+        <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
+      </div>
+    </header>
+
+    <main x-data="libraryPage()" x-cloak>
+      <div class="banner banner-error" x-show="error" role="alert">
+        <p class="banner-title">Something needs fixing</p>
+        <p x-text="error"></p>
+      </div>
+      <p class="muted" x-show="!data && !error">Loading…</p>
+
+      <template x-if="data && !data.configured">
+        <section class="card">
+          <h1>Done HDD</h1>
+          <p style="margin-top: 10px">No Library HDD is set up. Add its path as <code>drives.library</code> in config.json.</p>
+        </section>
+      </template>
+
+      <template x-if="data && data.configured">
+        <div style="display: grid; gap: 20px">
+          <section class="card title-block">
+            <h1>Done HDD</h1>
+            <p class="title-meta">Your Library HDD: finished, recent projects, oldest first. · <code x-text="data.path"></code></p>
+
+            <template x-if="data.space">
+              <div style="display: grid; gap: 8px; max-width: 640px">
+                <div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-label="Library HDD used"
+                  :aria-valuenow="Math.round(data.space.usedPercent)">
+                  <div class="meter-fill" :class="meterLevel(data.space.usedPercent, data.limitPercent)"
+                    :style="`width: ${Math.min(100, data.space.usedPercent)}%`"></div>
+                  <div class="meter-limit" :style="`left: ${data.limitPercent}%`" :title="`Limit: ${data.limitPercent}%`"></div>
+                </div>
+                <p>
+                  <strong x-text="formatBytes(data.space.usedBytes)"></strong> used of
+                  <span x-text="formatBytes(data.space.totalBytes)"></span>
+                  (<strong x-text="formatPercent(data.space.usedPercent)"></strong>) ·
+                  <span x-text="formatBytes(data.space.freeBytes)"></span> free ·
+                  <span class="muted" x-text="`limit ${data.limitPercent}%`"></span>
+                </p>
+              </div>
+            </template>
+            <p>
+              <span class="connected-dot" x-show="data.connected">Connected</span>
+              <span class="not-connected" x-show="!data.connected">Not connected</span>
+              <span class="muted" x-text="lastScannedText()"></span>
+            </p>
+            <p class="small muted" x-show="data.lastFailure"
+              x-text="data.lastFailure ? `The scan on ${formatDateTime(data.lastFailure.at)} didn't finish: ${data.lastFailure.message}` : ''"></p>
+          </section>
+
+          <!-- Past the limit: what to move to the Archive -->
+          <template x-if="data.plan && data.plan.status !== 'ok'">
+            <section class="banner banner-warn" aria-labelledby="move2-title">
+              <p class="banner-title" id="move2-title" x-text="bannerTitle()"></p>
+              <p x-text="bannerText()"></p>
+              <ol x-show="data.plan.moves.length > 0">
+                <template x-for="p in data.plan.moves" :key="p.id">
+                  <li>
+                    <a :href="`project.html?id=${p.id}`" x-text="p.name"></a>
+                    — <span x-text="formatBytes(p.sizeBytes)"></span>,
+                    <span class="muted" x-text="`last edited ${formatDate(p.lastEdited)}`"></span>
+                  </li>
+                </template>
+              </ol>
+              <p x-show="data.plan.moves.length > 0" x-text="afterText()"></p>
+              <p x-show="data.plan.moves.length === 0 && !data.lastScan">
+                Press Scan now on the Overview with the Library plugged in, to see which projects to move.
+              </p>
+              <p x-show="!data.plan.enough && data.plan.moves.length > 0">
+                Even all of these aren't quite enough: free up a little more space another way, or lower
+                <code>libraryFull.targetPercent</code>.
+              </p>
+              <p class="small" x-text="archiveText()"></p>
+              <p class="small muted">Read-only for now: moving projects comes in Phase 5 (with Vericopy's checksums). Copy them with Vericopy yourself until then.</p>
+            </section>
+          </template>
+
+          <section class="banner banner-info" x-show="data.plan && data.plan.status === 'ok'">
+            <p x-text="roomText()"></p>
+          </section>
+
+          <!-- The list -->
+          <section class="card" aria-labelledby="list-title">
+            <div class="card-head">
+              <h2 id="list-title">On the Library HDD, oldest first</h2>
+              <p class="muted small" x-text="`${plural(data.totals.count, 'project')} · ${formatBytes(data.totals.bytes)}`"></p>
+            </div>
+            <div class="table-wrap" x-show="data.projects.length > 0">
+              <table class="stack-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Project</th>
+                    <th scope="col">Client</th>
+                    <th scope="col" class="right">Size</th>
+                    <th scope="col">Last edited</th>
+                    <th scope="col">Suggestion</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="p in data.projects" :key="p.id">
+                    <tr class="clickable" @click="openProject($event, p)">
+                      <td class="cell-name" data-label="Project">
+                        <a class="project-name" :href="`project.html?id=${p.id}`" x-text="p.name"></a>
+                      </td>
+                      <td data-label="Client" :class="{ 'phone-hide': !p.client }" x-text="p.client || '—'"></td>
+                      <td data-label="Size" class="right num" x-text="formatBytes(p.sizeBytes)"></td>
+                      <td data-label="Last edited" class="num">
+                        <span x-text="formatDate(p.lastEdited)"></span>
+                        <span class="reason" x-text="p.lastEdited ? formatAgo(p.lastEdited) : 'no dated files'"></span>
+                      </td>
+                      <td data-label="Suggestion" :class="{ 'phone-hide': !p.suggested }">
+                        <span class="tag tag-check" x-show="p.suggested">Move to Archive</span>
+                        <span class="muted" x-show="!p.suggested">—</span>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div class="empty" x-show="data.projects.length === 0">
+              <p x-show="!data.lastScan">
+                The Library HDD hasn't been scanned yet. Plug it in and press <strong>Scan now</strong> on the
+                <a href="/">Overview</a>.
+              </p>
+              <p x-show="data.lastScan">The last scan found no project folders on the Library HDD.</p>
+            </div>
+            <p class="muted small" style="margin-top: 12px" x-show="data.shared.count > 0"
+              x-text="`Also on the Library: ${plural(data.shared.count, 'shared folder')} (${formatBytes(data.shared.bytes)}), never moved.`"></p>
+          </section>
+        </div>
+      </template>
+    </main>
+  </body>
+</html>

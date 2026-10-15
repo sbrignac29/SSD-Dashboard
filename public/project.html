@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Project · SSD Offload</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      try {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+    <script src="js/common.js" defer></script>
+    <script src="js/project.js" defer></script>
+    <script src="vendor/chart.umd.min.js" defer></script>
+    <script src="vendor/alpine.min.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">SSD Offload</a>
+        <nav aria-label="Pages">
+          <a href="/">Overview</a>
+          <a href="library.html">Done HDD</a>
+        </nav>
+        <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
+      </div>
+    </header>
+
+    <main x-data="projectPage()" x-cloak>
+      <a class="back-link" :href="backLink()" x-text="backText()"></a>
+
+      <div class="banner banner-error" x-show="error" role="alert">
+        <p class="banner-title">Couldn't load this project</p>
+        <p x-text="error"></p>
+      </div>
+      <p class="muted" x-show="!data && !error">Loading…</p>
+
+      <template x-if="data">
+        <div style="display: grid; gap: 20px">
+          <!-- Title, verdict, actions -->
+          <section class="card title-block">
+            <h1 x-text="data.project.name"></h1>
+            <p class="title-meta">
+              <span x-text="data.project.driveLabel"></span>
+              <span x-show="data.project.client" x-text="` · ${data.project.client}`"></span>
+              · <code x-text="data.project.relPath"></code>
+            </p>
+
+            <div class="verdict" x-show="data.scoring">
+              <span class="tag tag-large" :class="data.scoring ? `tag-${data.scoring.tag}` : ''">
+                <span class="tag-icon" aria-hidden="true" x-text="data.scoring ? TAG_ICONS[data.scoring.tag] : ''"></span>
+                <span x-text="data.scoring ? data.scoring.tagLabel : ''"></span>
+              </span>
+              <span class="muted">Score <strong x-text="data.scoring ? data.scoring.score.toFixed(1) : ''"></strong> / 100</span>
+              <span class="muted" x-text="data.scoring ? `· ${data.scoring.reason}` : ''"></span>
+            </div>
+
+            <p x-show="data.project.drive === 'library'">
+              <span class="tag tag-keep">On the Library HDD</span>
+              <span class="muted">Library projects aren't scored: Move 2 goes oldest first (see Done HDD).</span>
+            </p>
+            <p x-show="data.project.kind === 'shared'" class="muted">
+              A shared folder (folders.shared in config.json): used by many projects, so it's measured but never ranked or moved.
+            </p>
+
+            <div class="banner banner-info" x-show="data.project.missing">
+              <p>
+                <strong>Not on the <span x-text="data.project.driveLabel"></span> any more.</strong>
+                The last scan that saw it was <span x-text="formatDateTime(data.project.lastScanned)"></span>
+                — it was moved, renamed or deleted. These are the facts from then.
+              </p>
+            </div>
+            <div class="banner banner-info" x-show="data.scoring && data.scoring.stale">
+              <p>
+                Your settings changed since the last scan: with them, this project would score
+                <strong x-text="data.scoring ? data.scoring.freshScore.toFixed(1) : ''"></strong>.
+                Press Scan now on the Overview to update it.
+              </p>
+            </div>
+
+            <div class="actions">
+              <template x-if="data.pin">
+                <div class="coming-soon">
+                  <button type="button" class="button" :class="data.pin.pinned ? '' : 'button-primary'" @click="togglePin()"
+                    :disabled="pinBusy" :aria-pressed="data.pin.pinned.toString()"
+                    x-text="data.pin.pinned ? 'Unpin' : 'Pin as Keep'"></button>
+                  <span class="small muted"
+                    x-text="data.pin.pinned ? 'Pinned: it stays on the SSD.' : 'Keeps it on the SSD, whatever the score.'"></span>
+                </div>
+              </template>
+              <div class="coming-soon">
+                <button type="button" class="button" disabled
+                  x-text="data.project.drive === 'library' ? 'Move to Archive' : 'Move to HDD'"></button>
+                <span class="small muted">Coming in Phase 5</span>
+              </div>
+            </div>
+            <p class="small" x-show="pinMessage" x-text="pinMessage" aria-live="polite"></p>
+          </section>
+
+          <!-- Why -->
+          <div class="row-2-even" x-show="data.scoring">
+            <section class="card" aria-labelledby="why-title">
+              <h2 id="why-title" style="margin-bottom: 14px">What it needs to be ready to move</h2>
+              <ul class="checks">
+                <template x-for="c in (data.scoring ? data.scoring.checks : [])" :key="c.id">
+                  <li class="check" :class="`check-${c.state}`">
+                    <span class="check-mark" role="img" :aria-label="checkWord(c.state)" x-text="checkMark(c.state)"></span>
+                    <div>
+                      <p x-text="c.label"></p>
+                      <p class="check-detail" x-show="c.detail" x-text="c.detail"></p>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+            </section>
+
+            <section class="card" aria-labelledby="math-title">
+              <h2 id="math-title">How the score adds up</h2>
+              <p class="muted small" style="margin: 4px 0 10px">
+                The score orders projects. Whether one is ready to move comes from the list on the left.
+              </p>
+              <table class="math">
+                <thead>
+                  <tr><th>Part</th><th class="right">Value</th><th class="right">× weight</th><th class="right">Points</th></tr>
+                </thead>
+                <tbody>
+                  <template x-for="part in (data.scoring ? data.scoring.parts : [])" :key="part.id">
+                    <tr>
+                      <td>
+                        <strong x-text="part.label"></strong>
+                        <span class="reason" x-text="part.why"></span>
+                      </td>
+                      <td class="right num" x-text="part.value.toFixed(1)"></td>
+                      <td class="right num" x-text="`× ${part.weight}`"></td>
+                      <td class="right num" x-text="part.points.toFixed(1)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="3">Score (0–100)</td>
+                    <td class="right num" x-text="data.scoring ? data.scoring.score.toFixed(1) : ''"></td>
+                  </tr>
+                </tfoot>
+              </table>
+              <p class="muted small" style="margin-top: 10px"
+                x-text="data.scoring ? `Unfinished projects scoring ${data.scoring.reviewThreshold}+ are tagged Check first.` : ''"></p>
+            </section>
+          </div>
+
+          <!-- Facts + size by type -->
+          <div class="row-2-even">
+            <section class="card" aria-labelledby="facts-title">
+              <h2 id="facts-title" style="margin-bottom: 14px">Facts from the last scan</h2>
+              <dl class="facts">
+                <dt>Size</dt>
+                <dd><strong x-text="formatBytes(data.project.sizeBytes)"></strong>
+                  <span class="muted" x-text="` · ${plural(data.project.fileCount, 'file')}`"></span></dd>
+                <dt>Last edited</dt>
+                <dd>
+                  <span x-text="formatDateTime(data.project.lastEdited)"></span>
+                  <span class="check-detail" style="display: block" x-text="data.project.lastEditedFile || ''"></span>
+                </dd>
+                <dt>Project file saved</dt>
+                <dd>
+                  <span x-text="data.project.lastProjectSave ? formatDateTime(data.project.lastProjectSave) : 'No project file in this folder'"></span>
+                  <span class="check-detail" style="display: block" x-text="data.project.lastProjectSaveFile || ''"></span>
+                </dd>
+                <dt>Export</dt>
+                <dd x-text="exportText()"></dd>
+                <dt>Notion status</dt>
+                <dd class="muted">— (connects in Phase 4)</dd>
+                <dt>First seen</dt>
+                <dd x-text="formatDate(data.project.firstSeen)"></dd>
+                <dt>Last scanned</dt>
+                <dd x-text="formatDateTime(data.project.lastScanned)"></dd>
+              </dl>
+            </section>
+
+            <section class="card" aria-labelledby="types-title">
+              <h2 id="types-title" style="margin-bottom: 14px">Size by file type</h2>
+              <div class="chart-box"><canvas x-ref="sizeChart" role="img" :aria-label="chartLabel()"></canvas></div>
+              <details class="show-numbers">
+                <summary>Show the numbers</summary>
+                <table class="numbers-table">
+                  <thead><tr><th>Type</th><th class="right">Size</th><th class="right">Share</th></tr></thead>
+                  <tbody>
+                    <template x-for="row in sizeRows(data.project.bytesByType)" :key="row.type">
+                      <tr>
+                        <td x-text="row.label"></td>
+                        <td class="right num" x-text="formatBytes(row.bytes)"></td>
+                        <td class="right num" x-text="`${row.percent.toFixed(0)}%`"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </details>
+            </section>
+          </div>
+
+          <!-- Folder tree -->
+          <section class="card" aria-labelledby="tree-title">
+            <div class="card-head">
+              <h2 id="tree-title">Folders, biggest first</h2>
+              <p class="muted small" x-text="`${data.treeDepth} levels deep · click a folder to open it`"></p>
+            </div>
+            <div x-ref="tree"></div>
+          </section>
+        </div>
+      </template>
+    </main>
+  </body>
+</html>
