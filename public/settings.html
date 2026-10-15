@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Settings · SSD Offload</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      try {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+    <script src="js/common.js" defer></script>
+    <script src="js/settings.js" defer></script>
+    <script src="vendor/alpine.min.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">SSD Offload</a>
+        <nav aria-label="Pages">
+          <a href="/">Overview</a>
+          <a href="library.html">Done HDD</a>
+          <a href="settings.html" aria-current="page">Settings</a>
+        </nav>
+        <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
+      </div>
+    </header>
+
+    <main x-data="settingsPage()" x-cloak>
+      <div class="banner banner-error" x-show="error" role="alert">
+        <p class="banner-title">Something needs fixing</p>
+        <p class="pre-line" x-text="error"></p>
+      </div>
+      <p class="muted" x-show="!data && !error">Loading…</p>
+
+      <template x-if="data">
+        <form class="settings" @submit.prevent="save()" novalidate>
+          <section class="card title-block">
+            <h1>Settings</h1>
+            <p class="title-meta">
+              Using <strong x-text="data.source"></strong>
+              <span x-show="data.savedAt" x-text="`· last saved here ${formatDateTime(data.savedAt)}`"></span>
+            </p>
+            <p class="small muted">
+              Changes you save here are kept in the app's database (<code>data/dashboard.db</code>) and win over
+              <code>config.json</code>, which the app never edits. Settings you don't change here keep following
+              <code>config.json</code>. The Terminal commands (<code>npm run scan</code>, ...) use these settings too.
+            </p>
+          </section>
+
+          <div class="banner banner-error" x-show="data.problem" role="alert">
+            <p class="banner-title">Your saved settings don't fit together</p>
+            <p class="pre-line" x-text="data.problem"></p>
+            <p>Fix the value below and save, or use config.json for everything.</p>
+          </div>
+
+          <div class="banner banner-info" x-show="!data.canEdit">
+            <p>Settings can only be changed on the Mac running the dashboard. You can look at them here.</p>
+          </div>
+
+          <div class="banner banner-info" x-show="notice" role="status">
+            <p class="banner-title" x-text="notice?.title"></p>
+            <p x-text="notice?.text"></p>
+            <p x-show="notice?.needsScan">
+              <a href="/">Go to the Overview and press Scan now</a> to see the change.
+            </p>
+          </div>
+
+          <template x-for="section in data.sections" :key="`${section.id}-${loads}`">
+            <section class="card settings-section" :aria-labelledby="`section-${section.id}`">
+              <details :open="!section.advanced">
+                <summary class="settings-summary">
+                  <h2 :id="`section-${section.id}`" x-text="section.title"></h2>
+                  <span class="muted small" x-show="section.advanced">Show</span>
+                </summary>
+                <p class="muted small settings-intro" x-show="section.intro" x-text="section.intro"></p>
+
+                <div class="settings-fields">
+                  <template x-for="field in section.fields" :key="`${field.key}-${loads}`">
+                    <div class="setting" :class="{ 'is-changed': isEdited(field) }">
+                      <!-- On / off -->
+                      <template x-if="field.type === 'boolean'">
+                        <label class="setting-toggle">
+                          <input type="checkbox" x-model="form[field.key]" :disabled="!data.canEdit" />
+                          <span class="setting-label" x-text="field.label"></span>
+                        </label>
+                      </template>
+
+                      <template x-if="field.type !== 'boolean'">
+                        <label class="setting-label" :for="inputId(field)" x-text="field.label"></label>
+                      </template>
+
+                      <template x-if="field.type === 'text'">
+                        <input class="setting-input" type="text" :id="inputId(field)" x-model="form[field.key]"
+                          :disabled="!data.canEdit" spellcheck="false" autocomplete="off" />
+                      </template>
+
+                      <template x-if="field.type === 'number'">
+                        <div class="setting-number">
+                          <input class="setting-input" type="number" inputmode="decimal" :id="inputId(field)"
+                            x-model="form[field.key]" :min="field.min" :max="field.max" :step="field.step ?? 'any'"
+                            :disabled="!data.canEdit" />
+                          <span class="muted" x-show="field.unit" x-text="field.unit"></span>
+                        </div>
+                      </template>
+
+                      <template x-if="field.type === 'list'">
+                        <textarea class="setting-input setting-list" :id="inputId(field)" x-model="form[field.key]"
+                          :rows="Math.min(8, Math.max(3, lineCount(form[field.key]) + 1))"
+                          :disabled="!data.canEdit" spellcheck="false"></textarea>
+                      </template>
+
+                      <p class="small muted" x-show="field.help" x-text="field.help"></p>
+                      <!-- The three weights must add up to 1: the running total, under the last one. -->
+                      <p class="small" x-show="field.key === 'weights.size'" :class="weightsOk() ? 'muted' : 'text-critical'"
+                        x-text="weightsText()"></p>
+                      <p class="setting-meta small">
+                        <span class="muted" x-text="field.effectText"></span>
+                        <template x-if="field.changedHere">
+                          <span class="setting-from">
+                            <span class="tag tag-pinned">Changed here</span>
+                            <span class="muted" x-text="`config.json: ${describe(field, field.fileValue)}`"></span>
+                            <button type="button" class="link-button" x-show="data.canEdit"
+                              @click="useFileValue(field)">Use config.json value</button>
+                          </span>
+                        </template>
+                        <span class="tag tag-check" x-show="isEdited(field)">Not saved yet</span>
+                      </p>
+                    </div>
+                  </template>
+                </div>
+
+              </details>
+            </section>
+          </template>
+
+          <section class="card" aria-labelledby="fixed-title">
+            <h2 id="fixed-title">Only in config.json</h2>
+            <p class="muted small settings-intro">
+              These are used when <code>npm start</code> begins. Change them in <code>config.json</code>, then stop the
+              dashboard (Ctrl+C) and start it again.
+            </p>
+            <dl class="facts">
+              <template x-for="item in data.fixed" :key="item.key">
+                <div>
+                  <dt x-text="item.label"></dt>
+                  <dd><code x-text="item.value"></code></dd>
+                </div>
+              </template>
+            </dl>
+          </section>
+
+          <section class="card" x-show="data.canEdit && data.changedCount > 0" aria-labelledby="reset-title">
+            <h2 id="reset-title">Start over</h2>
+            <p class="muted small settings-intro"
+              x-text="`Forget the ${plural(data.changedCount, 'change')} saved here and use config.json for everything.`"></p>
+            <button type="button" class="button" @click="resetAll()" :disabled="busy">Use config.json for everything</button>
+          </section>
+
+          <!-- Shows up while there are unsaved changes. -->
+          <div class="save-bar" x-show="data.canEdit && dirty()" x-transition.opacity>
+            <p x-text="`${plural(editedCount(), 'unsaved change')}`"></p>
+            <div class="save-bar-buttons">
+              <button type="button" class="button" @click="discard()" :disabled="busy">Discard</button>
+              <button type="submit" class="button button-primary" :disabled="busy" x-text="busy ? 'Saving…' : 'Save'"></button>
+            </div>
+          </div>
+        </form>
+      </template>
+    </main>
+  </body>
+</html>

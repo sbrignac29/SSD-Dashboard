@@ -122,7 +122,7 @@ Then open **<http://localhost:7744>** in Safari or Chrome. Terminal shows:
 SSD Offload Dashboard is running.
   Open http://localhost:7744 in your browser.
   Nothing is scanned until you press "Scan now".
-  Nightly scan: off (turn on with "nightlyScan": true under "server" in config.json).
+  Nightly scan: off (you can switch it on in Settings).
   Settings: config.json · Database: data/dashboard.db
   Press Ctrl+C to stop.
 ```
@@ -199,6 +199,12 @@ the projects ready on the SSD would push it past, the banner lists what to move
 first to make room. It's a list only: copy them with Vericopy yourself until
 Phase 5.
 
+### The Settings page
+
+Change the drive paths, the Done HDD limits, the scoring numbers, the folder
+lists, the nightly scan and the file types without opening `config.json`.
+Section 10 explains how it works.
+
 ### When a drive is unplugged
 
 Nothing breaks and nothing turns into an error. The drive's card says **Not
@@ -226,7 +232,8 @@ when you're done.
 ### Nightly scans (off unless you turn them on)
 
 You asked for nothing to scan until you press the button, so the 2 AM scan is
-**off**. To turn it on, add `"nightlyScan": true` under `"server"` in
+**off**. To turn it on, tick **Nightly scan** on the Settings page (it starts
+straight away, no restart), or add `"nightlyScan": true` under `"server"` in
 `config.json` and restart `npm start`. It then scans both drives at 2:00 AM
 while `npm start` is running and the Mac is awake (shown live on the page, like
 a Scan now press). A missed or failed night is harmless.
@@ -250,6 +257,9 @@ database at all. It asks the server for data at addresses that start with
 | `GET /api/library` | The Done HDD page: Library projects oldest first, and the Archive list |
 | `POST /api/scan` | Scan the connected drives now. It answers at once ("started") and keeps scanning |
 | `GET /api/scan` | How far the scan is. The page asks twice a second while it runs ("polling") |
+| `GET /api/settings` | The Settings page: every setting, its value, and its `config.json` value |
+| `POST /api/settings` | Save changed settings (in the database; checked first, nothing saved if anything is wrong) |
+| `POST /api/settings/reset` | Forget the Settings page's changes and use `config.json` again |
 
 `GET` means "give me"; `POST` means "do something". You can open the `GET`
 ones in your browser to see the raw answers, e.g.
@@ -330,8 +340,8 @@ deleted) is **marked missing, not deleted**, so its history stays.
 that fails (SSD not plugged in) is recorded as failed and changes nothing else.
 
 **Nightly scans (off unless you turn them on).** See section 4: the 2 AM scan
-runs only with `npm start` running and `"nightlyScan": true` under `"server"` in
-`config.json`. Otherwise the database updates when you press Scan now or run
+runs only with `npm start` running and the nightly scan switched on (Settings
+page, or `"nightlyScan": true` under `"server"` in `config.json`). Otherwise the database updates when you press Scan now or run
 `npm run scan`.
 
 ## 6. Reading the report
@@ -499,8 +509,8 @@ stays on your Mac.
    **Read-only matters:** if you edit something and leave it unsaved, DB Browser
    locks the file, and a scan or pin will stop with "The database is busy".
 3. **Look around:**
-   - **Database Structure** tab: the **schema**, i.e. the three tables
-     (`projects`, `scans`, `archive_log`) and their columns.
+   - **Database Structure** tab: the **schema**, i.e. the four tables
+     (`projects`, `scans`, `archive_log`, `settings`) and their columns.
      Since the dashboard, `projects` holds the Library's projects too: the
      `drive` column says which drive a row is on (`working` or `library`).
    - **Browse Data** tab: pick a table from the **Table** menu to see its rows.
@@ -599,6 +609,10 @@ scanned), `project_count`, `file_count`, `total_bytes`, `errors` (the warnings,
 or why it failed, as a JSON list), and `drive_total_bytes` / `drive_free_bytes`
 (how full the drive was, so the dashboard can show it while it's unplugged).
 
+**`settings`**: one row. `overrides` holds what you saved on the Settings page,
+as JSON (e.g. `{"ageDays": {"recent": 21, "max": 120}}`), and `updated_at` when.
+`{}` means nothing is changed there: everything comes from `config.json`.
+
 **`archive_log`**: empty for now. When moving projects arrives (Phase 5) it
 gets one row per move: `archived_at`, `project_id` (points at the `projects`
 row), `project_path`, `destination_drive` (`library` or `archive`),
@@ -623,7 +637,34 @@ to leave.
   the next `npm start` or `npm run scan` makes a new one. You lose your pins,
   the scan history, and the "no longer on the Working SSD" list.
 
-## 10. Settings (`config.json`)
+## 10. Settings (the Settings page, or `config.json`)
+
+**The easy way:** open the dashboard (`npm start`) and click **Settings** in the
+top bar. Each setting has a short explanation and says when it takes effect:
+scores and drive limits change as soon as you press **Save**; folder and
+file-type changes show at the next **Scan now**. If something doesn't fit (say,
+the weights don't add up to 1), nothing is saved and the page tells you what to fix.
+
+How it works, in case you wonder where things go:
+- The app never edits `config.json` (it only ever writes inside `data/`). What
+  you save on the Settings page is kept in the database, `data/dashboard.db`
+  (the `settings` table), and wins over `config.json`.
+- Only the values you change there are saved. Everything else keeps following
+  `config.json`, so the two can be mixed. A changed setting shows **Changed
+  here** and its `config.json` value, with a **Use config.json value** link.
+- **Use config.json for everything** (bottom of the page) forgets all the
+  page's changes. `config.json` itself is untouched.
+- `npm run scan`, `npm run report` and `npm run pin` use the same settings as
+  the dashboard (the scan prints e.g. `Settings: config.json + 2 changes from
+  the Settings page`).
+- `server.port` and `server.host` are only shown there: change them in
+  `config.json` and restart `npm start`. If you open the dashboard to your phone
+  (`"host": "0.0.0.0"`), the phone can look at the settings but only this Mac
+  can change them.
+- Deleting `data/dashboard.db` (section 9) also forgets the Settings page's changes.
+
+**In `config.json`:** every setting can also be written there (the app's
+defaults are in `config.example.json`):
 
 | Setting | What it does |
 |---|---|
@@ -662,8 +703,10 @@ commas, and there's **no comma after the last item**. If you break the file,
 the app tells you where.
 
 The dashboard re-reads `config.json` every time a page loads, so most changes
-show up when you refresh (scores after the next Scan now). `server` changes need
-a restart of `npm start`.
+show up when you refresh (scores after the next Scan now). `server.port` and
+`server.host` need a restart of `npm start`. Remember that a value saved on the
+Settings page wins over `config.json`: if an edit there seems to do nothing, the
+Settings page shows that setting as **Changed here**.
 
 ## 11. Checking the numbers against Finder
 
@@ -847,6 +890,7 @@ touch your real `data/dashboard.db`.
 ```
 config.example.json      default settings (copy to config.json)
 src/config.js            loads settings, runs safety checks
+src/settings.js          the Settings page: what it can change, checking values, config.json + saved changes
 src/cli/scan.js          the `npm run scan` command
 src/cli/report.js        the `npm run report` command
 src/cli/pin.js           the `npm run pin` command
@@ -854,7 +898,7 @@ src/cli/format.js        formats the printed reports
 src/server.js            the dashboard server (`npm start`): web addresses ("routes") and safety guards
 src/web/views.js         builds each answer the dashboard asks for (reads the database only)
 src/web/scanRunner.js    the Scan now button: one scan at a time, with progress
-src/db.js                the database: tables, saving scans, pins (writes only in data/)
+src/db.js                the database: tables, saving scans, pins, saved settings (writes only in data/)
 src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and the nightly job)
 src/jobs/nightly.js      the 2 AM nightly scan (only if server.nightlyScan is on)
 src/scanner/scan.js      walks a drive (read-only) and collects facts
@@ -865,6 +909,7 @@ src/scoring/score.js     the scoring formula and the Ready/Review/Keep rule
 src/scoring/plan.js      the move plan: will it fit, is the Library full, what to move to the Archive
 src/notion/, src/offload/   Phases 4 and 5 (stubs)
 public/                  the dashboard pages: index.html (Overview), project.html, library.html (Done HDD),
+                         settings.html,
                          styles.css, and js/ (the code that runs in your browser)
 tests/                   automated tests
 data/                    the only folder the app writes to: dashboard.db (not uploaded to GitHub)

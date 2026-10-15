@@ -9,11 +9,13 @@
 // A pinned project is always Keep, however old or finished it is. Your pins
 // are saved in the database (data/dashboard.db), because the app only ever
 // writes inside data/; it never edits config.json. Pins you put in
-// config.json (folders.keepPinned) work too.
+// config.json or on the Settings page (folders.keepPinned) work too.
 // Nothing on the SSD changes.
 
 const { parseArgs } = require('node:util');
-const { loadConfig, assertSafeLocations, ConfigError } = require('../config');
+const { assertSafeLocations, ConfigError } = require('../config');
+// config.json + the changes saved on the dashboard's Settings page.
+const { loadAppConfig } = require('../settings');
 const { isPinnedByConfig } = require('../scanner/scan');
 const { openDatabase, latestScan, listProjects, togglePin, describeDatabaseError } = require('../db');
 
@@ -36,7 +38,7 @@ function listPins(db, config) {
   } else {
     console.log('Pinned as Keep:');
     for (const p of pinned) {
-      const sources = [p.pinnedInDatabase && 'npm run pin', p.pinnedInConfig && 'config.json'].filter(Boolean).join(' + ');
+      const sources = [p.pinnedInDatabase && 'npm run pin', p.pinnedInConfig && 'settings'].filter(Boolean).join(' + ');
       console.log(`  • ${p.name}  (${sources})${p.missing ? '  — not on the SSD in the last scan' : ''}`);
     }
   }
@@ -69,9 +71,10 @@ function explain(outcome, typedName) {
   if (result === 'pinned-in-config') {
     lines.push(
       project.missing
-        ? `${name} is pinned in config.json (folders.keepPinned), so it's always Keep.`
-        : `${name} is pinned in config.json (folders.keepPinned), so it's always Keep (the saved results now show that too).`,
-      'The app never edits config.json. To unpin it, remove it from that list in config.json, then run `npm run scan`.',
+        ? `${name} is pinned in your settings (folders.keepPinned), so it's always Keep.`
+        : `${name} is pinned in your settings (folders.keepPinned), so it's always Keep (the saved results now show that too).`,
+      'To unpin it, remove it from "Always keep on the SSD" on the dashboard\'s Settings page (it re-scores at once),',
+      'or from folders.keepPinned in config.json, then run `npm run scan`.',
     );
     if (project.missing) {
       lines.push(`Note: ${name} wasn't on the Working SSD in the last scan, so it has no current bucket.`);
@@ -82,8 +85,8 @@ function explain(outcome, typedName) {
     lines.push(`Pinned ${name} as Keep.`, describeBucket(project), '  Run the same command again to unpin it.');
   } else if (outcome.stillPinnedByConfig) {
     lines.push(
-      `Removed your pin from ${name}, but config.json also pins it (folders.keepPinned), so it stays Keep.`,
-      'To unpin it completely, remove it from that list in config.json, then run `npm run scan`.',
+      `Removed your pin from ${name}, but your settings also pin it (folders.keepPinned), so it stays Keep.`,
+      'To unpin it completely, remove it from "Always keep on the SSD" on the Settings page, or from that list in config.json.',
     );
   } else {
     lines.push(`Unpinned ${name}.`, describeBucket(project));
@@ -118,7 +121,7 @@ function main(argv) {
   // Forgot the quotes? `npm run pin -- Soccer 8-24` arrives as two words.
   const typedName = parsed.positionals.join(' ').trim();
 
-  const { config } = loadConfig();
+  const { config } = loadAppConfig();
   if (typedName === '') {
     const db = openDatabase({ readonly: true });
     try {

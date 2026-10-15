@@ -25,7 +25,9 @@
 //   - Scans only READ the SSD, so this can never change anything on it.
 
 const cron = require('node-cron');
-const { loadConfig, assertSafeLocations } = require('../config');
+const { assertSafeLocations } = require('../config');
+// config.json + the changes saved on the dashboard's Settings page.
+const { loadAppConfig } = require('../settings');
 const { openDatabase, describeDatabaseError } = require('../db');
 const { scanAndSave } = require('./scanAndSave');
 
@@ -34,7 +36,7 @@ const NIGHTLY_SCHEDULE = '0 2 * * *';
 // One nightly scan. Settings are re-read every night, so edits to
 // config.json apply without restarting the server.
 async function runSavedScan() {
-  const { config } = loadConfig();
+  const { config } = loadAppConfig();
   assertSafeLocations(config);
   const db = openDatabase();
   try {

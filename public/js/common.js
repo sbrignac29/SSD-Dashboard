@@ -1,6 +1,6 @@
 'use strict';
 
-// Shared by the three pages: talking to the server, formatting numbers and
+// Shared by the four pages: talking to the server, formatting numbers and
 // dates, the theme button, the size chart and the folder tree.
 //
 // This file runs in the BROWSER, not in Node. It can't see the drives or the
@@ -14,11 +14,12 @@ const Dashboard = (() => {
   // into objects). GET reads; POST asks the server to do something, and always
   // sends JSON (the server refuses POSTs that don't, see server.js).
   //   allow – HTTP statuses that aren't errors for this call, e.g. [409]
-  async function api(path, { method = 'GET', allow = [] } = {}) {
+  //   body  – what a POST sends (turned into JSON text); {} if left out
+  async function api(path, { method = 'GET', allow = [], body: sent = {} } = {}) {
     const options = { method, headers: { Accept: 'application/json' } };
     if (method !== 'GET') {
       options.headers['Content-Type'] = 'application/json';
-      options.body = '{}';
+      options.body = JSON.stringify(sent);
     }
     let response;
     try {

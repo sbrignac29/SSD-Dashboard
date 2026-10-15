@@ -17,6 +17,9 @@
 //   GET  /api/library            the Done HDD page: Library projects + the Archive move list
 //   POST /api/scan               scan the connected drives now (answers at once; the scan keeps going)
 //   GET  /api/scan               how far the scan is (the page asks twice a second)
+//   GET  /api/settings           the Settings page: every setting, and where its value comes from
+//   POST /api/settings           save changed settings (in data/dashboard.db, never config.json)
+//   POST /api/settings/reset     forget the Settings page's changes: use config.json again
 //
 // (":id" is a placeholder: /api/projects/12 runs the same route with id = 12.)
 // Everything else is a file from public/: the pages, their JavaScript and CSS.
@@ -27,14 +30,16 @@
 // touches the drives or the database itself; it can only ask the server.
 //
 // SAFETY (see CLAUDE.md): the server only READS the drives (scans, and statfs
-// for free space) and only WRITES to data/ (the database: scans and pins).
+// for free space) and only WRITES to data/ (the database: scans, pins and
+// the Settings page's changes).
 // Starting it never scans anything; only the Scan now button does (or the
-// nightly scan, if you turn it on in config.json: server.nightlyScan).
+// nightly scan, if you turn it on: Settings page, or server.nightlyScan).
 
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { ROOT_DIR, loadConfig, assertSafeLocations, ConfigError } = require('./config');
+const { createSettingsStore, loadAppConfig, SettingsError } = require('./settings');
 const { openDatabase, describeDatabaseError, togglePinById, displayPath } = require('./db');
 const { allDriveSpace } = require('./scanner/space');
 const { ScanError } = require('./scanner/scan');
@@ -87,6 +92,14 @@ function postsMustBeJson(req, res, next) {
   res.status(415).json({ error: 'Requests that change something must send JSON (Content-Type: application/json).' });
 }
 
+// 3. With phone access on (server.host "0.0.0.0"), other devices on your Wi-Fi
+//    can open the dashboard, but only this Mac can change its settings
+//    (a request from this Mac comes from a "loopback" address like 127.0.0.1).
+function fromThisMac(req) {
+  const address = String(req.socket.remoteAddress ?? '');
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 // --- The app -----------------------------------------------------------------
 
 // "12" -> 12; anything else (abc, 1.5, -3) -> a 404 answer.
@@ -98,16 +111,30 @@ function readId(text) {
 // Builds the Express app (without starting it, so tests can run it on any port).
 //   db         – the open database
 //   runner     – the scan runner (web/scanRunner.js)
-//   getConfig  – returns the current settings; re-read for every request, so
-//                edits to config.json show up without restarting
+//   settings   – the Settings page's store (settings.js → createSettingsStore)
+//   getConfig  – returns the current settings (config.json + the Settings
+//                page); re-read for every request, so edits to config.json
+//                show up without restarting
 //   getSpaces  – how full each drive is (tests pass fake numbers)
 //   localOnly  – turn the localhost guard on (off for phone access)
-function createApp({ db, runner, getConfig = () => loadConfig().config, getSpaces = allDriveSpace, localOnly = true }) {
+//   onSettingsSaved – called with the new settings after each save (main()
+//                uses it to start or stop the nightly scan)
+function createApp({
+  db,
+  runner,
+  settings = createSettingsStore({ db }),
+  getConfig = () => settings.current(),
+  getSpaces = allDriveSpace,
+  localOnly = true,
+  onSettingsSaved = () => {},
+}) {
   if (!express) throw new ConfigError(NPM_INSTALL_ADVICE);
   const app = express();
   app.disable('x-powered-by');
   if (localOnly) app.use(onlyLocalhost);
   app.use(postsMustBeJson);
+  // Turns the JSON a POST sends into req.body (the Settings page's values).
+  app.use(express.json({ limit: '200kb' }));
   // API answers are always fresh: tell the browser not to keep old copies.
   app.use('/api', (req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -157,6 +184,32 @@ function createApp({ db, runner, getConfig = () => loadConfig().config, getSpace
     res.status(outcome.started ? 202 : 200).json({ ...outcome.status, started: outcome.started, reason: outcome.reason ?? null });
   });
 
+  app.get('/api/settings', (req, res) => {
+    res.json({ ...settings.view(), canEdit: localOnly || fromThisMac(req) });
+  });
+
+  // Saving settings writes to the database, so only from this Mac (see
+  // fromThisMac); settings.js runs the same safety checks as a scan first.
+  function settingsChange(change) {
+    return (req, res) => {
+      if (!localOnly && !fromThisMac(req)) {
+        res.status(403).json({ error: 'Settings can only be changed on the Mac running the dashboard.' });
+        return;
+      }
+      // A running scan uses the settings it started with, and re-scores with
+      // them when it saves, which would quietly undo a change made meanwhile.
+      if (runner.status().running) {
+        res.status(409).json({ error: 'A scan is running. Save your settings once it has finished (your changes are still on the page).' });
+        return;
+      }
+      const outcome = change(req);
+      onSettingsSaved(outcome.config);
+      res.json({ changed: outcome.changed, needsScan: outcome.needsScan, settings: { ...settings.view(), canEdit: true } });
+    };
+  }
+  app.post('/api/settings', settingsChange((req) => settings.save(req.body?.values)));
+  app.post('/api/settings/reset', settingsChange(() => settings.reset()));
+
   app.get('/vendor/:file', (req, res, next) => {
     const file = VENDOR_FILES.get(req.params.file);
     if (!file) return next();
@@ -176,6 +229,15 @@ function createApp({ db, runner, getConfig = () => loadConfig().config, getSpace
   app.use((error, req, res, next) => {
     if (error instanceof views.RequestError) {
       res.status(error.status).json({ error: error.message });
+      return;
+    }
+    if (error instanceof SettingsError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    // express.json() couldn't read the request (not JSON, or far too big).
+    if (error.type === 'entity.parse.failed' || error.type === 'entity.too.large') {
+      res.status(error.status).json({ error: "The request couldn't be read as JSON." });
       return;
     }
     const plain = error instanceof ConfigError || error instanceof ScanError ? error.message : describeDatabaseError(error);
@@ -208,15 +270,45 @@ function nightlyScanThrough(runner) {
 function main() {
   // Without these the page would load blank, so check before starting.
   if (!express || [...VENDOR_FILES.values()].some((file) => !fs.existsSync(file))) throw new ConfigError(NPM_INSTALL_ADVICE);
-  const { config, source } = loadConfig();
   // SAFETY: refuse to start if the app or its data/ folder is on a media drive.
-  assertSafeLocations(config);
+  assertSafeLocations(loadConfig().config);
   // Opens (or creates) data/dashboard.db and upgrades its layout if needed.
   // This is not a scan: nothing on any drive is read yet.
   const db = openDatabase();
-  const runner = createScanRunner({ db, getConfig: () => loadConfig().config });
-  const { port, host, nightlyScan } = config.server;
-  const app = createApp({ db, runner, localOnly: isLoopback(host) });
+  // The settings: config.json plus any changes made on the Settings page
+  // (saved in the database), checked again now that both are known.
+  const settings = createSettingsStore({ db });
+  let config;
+  let source;
+  try {
+    ({ config, source } = loadAppConfig({ db }));
+    assertSafeLocations(config);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  const runner = createScanRunner({ db, getConfig: () => settings.current() });
+  // Port and host only come from config.json (the Settings page shows them, read-only).
+  const { port, host } = config.server;
+
+  // The nightly scan: started now if it's on, and started or stopped whenever
+  // the switch on the Settings page changes (no restart needed).
+  let nightlyTask = null;
+  function applyNightly(nightlyScan) {
+    if (nightlyScan && !nightlyTask) {
+      nightlyTask = scheduleNightlyScan({ run: nightlyScanThrough(runner) });
+    } else if (!nightlyScan && nightlyTask) {
+      nightlyTask.stop();
+      nightlyTask = null;
+    }
+  }
+  function onSettingsSaved(saved) {
+    const wasOn = Boolean(nightlyTask);
+    applyNightly(saved.server.nightlyScan);
+    if (wasOn !== Boolean(nightlyTask)) console.log(`Nightly scan turned ${nightlyTask ? 'on (2:00 AM)' : 'off'} on the Settings page.`);
+  }
+
+  const app = createApp({ db, runner, settings, localOnly: isLoopback(host), onSettingsSaved });
   const server = http.createServer(app);
 
   server.on('error', (error) => {
@@ -232,10 +324,9 @@ function main() {
     process.exitCode = 1;
   });
 
-  let nightlyTask = null;
   server.listen(port, host, () => {
     // Built in Phase 2; started only if you turned it on.
-    if (nightlyScan) nightlyTask = scheduleNightlyScan({ run: nightlyScanThrough(runner) });
+    applyNightly(config.server.nightlyScan);
     const url = `http://localhost:${port}`;
     console.log('SSD Offload Dashboard is running.');
     console.log(`  Open ${url} in your browser.`);
@@ -244,9 +335,9 @@ function main() {
     }
     console.log('  Nothing is scanned until you press "Scan now".');
     console.log(
-      nightlyScan
-        ? '  Nightly scan: on, at 2:00 AM while this Terminal window keeps running (server.nightlyScan in config.json).'
-        : '  Nightly scan: off (turn on with "nightlyScan": true under "server" in config.json).',
+      config.server.nightlyScan
+        ? '  Nightly scan: on, at 2:00 AM while this Terminal window keeps running (Settings page, or server.nightlyScan in config.json).'
+        : '  Nightly scan: off (you can switch it on in Settings).',
     );
     console.log(`  Settings: ${source} · Database: ${displayPath()}`);
     console.log('  Press Ctrl+C to stop.');
