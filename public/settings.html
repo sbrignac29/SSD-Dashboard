@@ -80,17 +80,7 @@
                 <div class="settings-fields">
                   <template x-for="field in section.fields" :key="`${field.key}-${loads}`">
                     <div class="setting" :class="{ 'is-changed': isEdited(field) }">
-                      <!-- On / off -->
-                      <template x-if="field.type === 'boolean'">
-                        <label class="setting-toggle">
-                          <input type="checkbox" x-model="form[field.key]" :disabled="!data.canEdit" />
-                          <span class="setting-label" x-text="field.label"></span>
-                        </label>
-                      </template>
-
-                      <template x-if="field.type !== 'boolean'">
-                        <label class="setting-label" :for="inputId(field)" x-text="field.label"></label>
-                      </template>
+                      <label class="setting-label" :for="inputId(field)" x-text="field.label"></label>
 
                       <template x-if="field.type === 'text'">
                         <input class="setting-input" type="text" :id="inputId(field)" x-model="form[field.key]"

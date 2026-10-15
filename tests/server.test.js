@@ -145,7 +145,6 @@ describe('starting the server', () => {
       assert.deepEqual([scan.running, scan.outcome], [false, null]);
       const { body: summary } = await server.call('/api/summary');
       assert.equal(summary.hasScan, false);
-      assert.equal(summary.nightlyScan, false, 'the nightly scan is off unless turned on in config.json');
       await new Promise((resolve) => setTimeout(resolve, 200));
       assert.equal(server.db.prepare('SELECT COUNT(*) AS n FROM scans').get().n, 0, 'still no scan');
     } finally {

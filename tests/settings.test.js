@@ -149,7 +149,7 @@ describe('the settings store', () => {
     refuses({ 'libraryFull.targetPercent': 95 }, /targetPercent/);
     refuses({ 'drives.working': '' }, /drives.working/);
     refuses({ 'ageDays.recent': 'soon' }, /must be a number/);
-    refuses({ 'server.nightlyScan': 'yes' }, /on or off/);
+    refuses({ 'server.nightlyScan': true }, /can't change "server.nightlyScan"/); // removed with the nightly scan
     refuses({ 'folders.ignore': [1, 2] }, /list of text/);
     refuses({ 'server.port': 8000 }, /can't change "server.port"/);
     refuses({ 'server.host': '0.0.0.0' }, /can't change "server.host"/);
@@ -218,10 +218,10 @@ describe('loadAppConfig (what the Terminal commands use)', () => {
 });
 
 describe('the settings routes', () => {
-  async function startServer({ onSettingsSaved, scanAndSave: scanStep } = {}) {
+  async function startServer({ scanAndSave: scanStep } = {}) {
     const { db, store, state } = await setup();
     const runner = createScanRunner({ db, getConfig: () => store.current(), scanAndSave: scanStep, log: { error() {} } });
-    const app = createApp({ db, runner, settings: store, getSpaces: async () => [], onSettingsSaved });
+    const app = createApp({ db, runner, settings: store, getSpaces: async () => [] });
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${server.address().port}`;
@@ -249,7 +249,7 @@ describe('the settings routes', () => {
       assert.equal(body.canEdit, true);
       assert.deepEqual(
         body.sections.map((s) => s.id),
-        ['drives', 'libraryFull', 'scoring', 'folders', 'schedule', 'fileTypes'],
+        ['drives', 'libraryFull', 'scoring', 'folders', 'fileTypes'],
       );
       assert.deepEqual(body.fixed.map((f) => f.key), ['server.port', 'server.host']);
     } finally {
@@ -257,21 +257,19 @@ describe('the settings routes', () => {
     }
   });
 
-  it('POST /api/settings saves, re-scores, and tells the server (e.g. to start the nightly scan)', async () => {
-    const saved = [];
-    const { db, call, stop } = await startServer({ onSettingsSaved: (config) => saved.push(config) });
+  it('POST /api/settings saves and re-scores at once; reset undoes it', async () => {
+    const { db, call, stop } = await startServer();
     const configJsonBefore = fs.existsSync(path.join(ROOT_DIR, 'config.json'))
       ? fs.readFileSync(path.join(ROOT_DIR, 'config.json'), 'utf8')
       : null;
     try {
       const { status, body } = await call('/api/settings', {
         method: 'POST',
-        body: { values: { 'server.nightlyScan': true, 'ageDays.recent': 365, 'ageDays.max': 400 } },
+        body: { values: { 'buckets.review': 50, 'ageDays.recent': 365, 'ageDays.max': 400 } },
       });
       assert.equal(status, 200);
       assert.equal(body.needsScan, false);
-      assert.equal(body.settings.changedCount, 2); // server.nightlyScan + the ageDays group
-      assert.equal(saved.at(-1).server.nightlyScan, true);
+      assert.equal(body.settings.changedCount, 2); // buckets.review + the ageDays group
       assert.equal(bucketOf(db, 'Old Finished'), 'Review');
 
       const projects = await call('/api/projects');
@@ -280,7 +278,7 @@ describe('the settings routes', () => {
       const reset = await call('/api/settings/reset', { method: 'POST' });
       assert.equal(reset.status, 200);
       assert.equal(reset.body.settings.changedCount, 0);
-      assert.equal(saved.at(-1).server.nightlyScan, false);
+      assert.equal(bucketOf(db, 'Old Finished'), 'Ready');
     } finally {
       await stop();
     }

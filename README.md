@@ -89,7 +89,7 @@ cp config.example.json config.json
 
 - `npm install` downloads the packages the app depends on into a folder
   called `node_modules`: **better-sqlite3** (talks to the database),
-  **node-cron** (runs the nightly scan on a schedule), **express** (the web
+  **express** (the web
   server behind the dashboard), and two libraries the dashboard page uses in
   your browser: **alpinejs** (fills the page with data and makes the buttons
   work) and **chart.js** (draws the size chart). The server hands those two to
@@ -122,7 +122,6 @@ Then open **<http://localhost:7744>** in Safari or Chrome. Terminal shows:
 SSD Offload Dashboard is running.
   Open http://localhost:7744 in your browser.
   Nothing is scanned until you press "Scan now".
-  Nightly scan: off (you can switch it on in Settings).
   Settings: config.json · Database: data/dashboard.db
   Press Ctrl+C to stop.
 ```
@@ -202,7 +201,7 @@ Phase 5.
 ### The Settings page
 
 Change the drive paths, the Done HDD limits, the scoring numbers, the folder
-lists, the nightly scan and the file types without opening `config.json`.
+lists and the file types without opening `config.json`.
 Section 10 explains how it works.
 
 ### When a drive is unplugged
@@ -228,15 +227,6 @@ asks about incoming connections, and on the phone open
 dashboard too and press Scan now or Pin (never move or delete: that code doesn't
 exist), so only do this on your home network, and set it back to `"127.0.0.1"`
 when you're done.
-
-### Nightly scans (off unless you turn them on)
-
-You asked for nothing to scan until you press the button, so the 2 AM scan is
-**off**. To turn it on, tick **Nightly scan** on the Settings page (it starts
-straight away, no restart), or add `"nightlyScan": true` under `"server"` in
-`config.json` and restart `npm start`. It then scans both drives at 2:00 AM
-while `npm start` is running and the Mac is awake (shown live on the page, like
-a Scan now press). A missed or failed night is harmless.
 
 ### How the page and the server talk
 
@@ -339,10 +329,8 @@ deleted) is **marked missing, not deleted**, so its history stays.
 `npm run report` lists those under "No longer on the Working SSD". A scan
 that fails (SSD not plugged in) is recorded as failed and changes nothing else.
 
-**Nightly scans (off unless you turn them on).** See section 4: the 2 AM scan
-runs only with `npm start` running and the nightly scan switched on (Settings
-page, or `"nightlyScan": true` under `"server"` in `config.json`). Otherwise the database updates when you press Scan now or run
-`npm run scan`.
+**Nothing scans on its own.** The database updates only when you press Scan now
+or run `npm run scan`.
 
 ## 6. Reading the report
 
@@ -675,7 +663,6 @@ defaults are in `config.example.json`):
 | `libraryFull.targetPercent` | How far down to bring the Library when that happens (70% — change it if you prefer) |
 | `server.port` | The dashboard's address: `http://localhost:7744`. Any number from 1024 to 65535 except 7743 (Vericopy's) |
 | `server.host` | `"127.0.0.1"`: only this Mac can open the dashboard (recommended). `"0.0.0.0"`: your phone on the same Wi-Fi too (section 4) |
-| `server.nightlyScan` | `false` (default): nothing scans until you press Scan now. `true`: also scan at 2 AM while `npm start` runs |
 | `ageDays.recent` / `ageDays.max` | The 14-day "still being worked on" window and the 120-day "fully old" point |
 | `weights` | The 0.45 / 0.35 / 0.20 mix. Must add up to 1 |
 | `buckets.review` | Unfinished projects scoring this or more (40) are Review instead of Keep |
@@ -798,7 +785,7 @@ the answers — including the scoring rules, the file sorting rules, the move
 plan, a scan of a fake drive, the database (scanning twice creates no
 duplicates, missing projects are kept, a pinned project is never Ready, Library
 scans are kept apart, older databases upgrade without losing anything), the
-nightly schedule, the dashboard server (each route, Scan now's progress, unplugged
+dashboard server (each route, Scan now's progress, unplugged
 drives, the localhost guards), and the safety checks. All should say `pass`.
 
 The database tests use their own throwaway database inside `data/`; they never
@@ -870,8 +857,6 @@ touch your real `data/dashboard.db`.
   start editing (your project file and renders will then be newer).
 - **The Archive's folders aren't scanned.** The dashboard knows how full it is,
   not what's on it.
-- **Nightly scans need `npm start` running** (and the Mac awake), and are off
-  unless you turn them on.
 - **Renaming a project folder** makes it look like a new project: the old name
   is marked missing and the new name starts fresh (pin it again if it was
   pinned).
@@ -899,8 +884,7 @@ src/server.js            the dashboard server (`npm start`): web addresses ("rou
 src/web/views.js         builds each answer the dashboard asks for (reads the database only)
 src/web/scanRunner.js    the Scan now button: one scan at a time, with progress
 src/db.js                the database: tables, saving scans, pins, saved settings (writes only in data/)
-src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and the nightly job)
-src/jobs/nightly.js      the 2 AM nightly scan (only if server.nightlyScan is on)
+src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and Scan now)
 src/scanner/scan.js      walks a drive (read-only) and collects facts
 src/scanner/classify.js  decides raw / proxy / export / cache / project / other, and final exports
 src/scanner/parseName.js pulls dates out of folder names ("Soccer 8-24")
@@ -959,13 +943,11 @@ data/                    the only folder the app writes to: dashboard.db (not up
   leave half a scan behind.
 - **Migration** — a step that upgrades the database's layout (e.g. adds a
   column) while keeping its data. The database remembers which steps it has.
-- **Cron expression** — five fields that describe a repeating time:
-  minute, hour, day of month, month, day of week. `0 2 * * *` = 2:00 AM daily.
 
 ## Roadmap
 
 1. ✅ Scanner, file classifier, scoring, `npm run scan`, three-drive config, drive space and move plan
-2. ✅ Database (SQLite), `npm run report`, `npm run pin`, the nightly scan job
+2. ✅ Database (SQLite), `npm run report`, `npm run pin`
 3. ✅ Dashboard (`npm start`): Overview, project pages, the Done HDD page with the
    Library → Archive list (Move 2); Library scans saved
 4. Notion sync for project status (fills the Status column; "Complete"/"Delivered" counts as done)

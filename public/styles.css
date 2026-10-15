@@ -861,19 +861,6 @@ details[open] > .settings-summary .muted {
   resize: vertical;
 }
 
-.setting-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-}
-
-.setting-toggle input {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent);
-}
-
 .setting-meta {
   display: flex;
   flex-wrap: wrap;

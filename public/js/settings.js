@@ -93,7 +93,6 @@ function settingsPage() {
     // A value as short text, e.g. for "config.json: 14".
     describe(field, value) {
       if (field.type === 'list') return value.length === 0 ? '(empty)' : value.join(', ');
-      if (field.type === 'boolean') return value ? 'on' : 'off';
       if (value === '') return '(empty)';
       return field.unit ? `${value} ${field.unit}` : String(value);
     },

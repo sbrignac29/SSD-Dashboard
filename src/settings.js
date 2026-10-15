@@ -23,7 +23,7 @@ const { openDatabase, readSavedSettings, writeSavedSettings, DEFAULT_DB_PATH } =
 class SettingsError extends Error {}
 
 // What happens after a change:
-//   now     – used straight away (drive bars, the Done HDD page, the nightly switch)
+//   now     – used straight away (drive bars, the Done HDD page)
 //   rescore – scores are recalculated as soon as you save
 //   scan    – takes effect at the next Scan now (the scan has to look again)
 const EFFECTS = {
@@ -34,7 +34,7 @@ const EFFECTS = {
 
 // Every setting the page can change, grouped into the page's sections.
 //   key    – where it lives in the settings, e.g. "ageDays.recent"
-//   type   – text | number | list (of text) | boolean
+//   type   – text | number | list (of text)
 //   saveAs – settings that only make sense together (the three weights must
 //            add up to 1) are saved as one group, so a later config.json edit
 //            can't leave them half from one place and half from the other
@@ -170,20 +170,6 @@ const SECTIONS = [
         type: 'list',
         effect: 'rescore',
         help: 'Same as the Pin button. Pinning a container pins every shoot in it.',
-      },
-    ],
-  },
-  {
-    id: 'schedule',
-    title: 'Nightly scan',
-    intro: 'Off by default: nothing scans until you press Scan now.',
-    fields: [
-      {
-        key: 'server.nightlyScan',
-        label: 'Scan the connected drives every night at 2:00 AM',
-        type: 'boolean',
-        effect: 'now',
-        help: 'Only while the Mac is awake and npm start is running.',
       },
     ],
   },
@@ -337,9 +323,6 @@ function parseValue(field, raw) {
       if (typeof value !== 'number' || !Number.isFinite(value)) throw new SettingsError(`${label} must be a number.`);
       return value;
     }
-    case 'boolean':
-      if (typeof raw !== 'boolean') throw new SettingsError(`${label} must be on or off (true or false).`);
-      return raw;
     case 'list': {
       // The page sends a list; text with one item per line works too.
       const items = typeof raw === 'string' ? raw.split('\n') : raw;

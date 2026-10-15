@@ -32,8 +32,7 @@
 // SAFETY (see CLAUDE.md): the server only READS the drives (scans, and statfs
 // for free space) and only WRITES to data/ (the database: scans, pins and
 // the Settings page's changes).
-// Starting it never scans anything; only the Scan now button does (or the
-// nightly scan, if you turn it on: Settings page, or server.nightlyScan).
+// Starting it never scans anything; only the Scan now button does.
 
 const fs = require('node:fs');
 const http = require('node:http');
@@ -43,7 +42,6 @@ const { createSettingsStore, loadAppConfig, SettingsError } = require('./setting
 const { openDatabase, describeDatabaseError, togglePinById, displayPath } = require('./db');
 const { allDriveSpace } = require('./scanner/space');
 const { ScanError } = require('./scanner/scan');
-const { scheduleNightlyScan } = require('./jobs/nightly');
 const views = require('./web/views');
 const { createScanRunner } = require('./web/scanRunner');
 
@@ -117,8 +115,6 @@ function readId(text) {
 //                show up without restarting
 //   getSpaces  – how full each drive is (tests pass fake numbers)
 //   localOnly  – turn the localhost guard on (off for phone access)
-//   onSettingsSaved – called with the new settings after each save (main()
-//                uses it to start or stop the nightly scan)
 function createApp({
   db,
   runner,
@@ -126,7 +122,6 @@ function createApp({
   getConfig = () => settings.current(),
   getSpaces = allDriveSpace,
   localOnly = true,
-  onSettingsSaved = () => {},
 }) {
   if (!express) throw new ConfigError(NPM_INSTALL_ADVICE);
   const app = express();
@@ -203,7 +198,6 @@ function createApp({
         return;
       }
       const outcome = change(req);
-      onSettingsSaved(outcome.config);
       res.json({ changed: outcome.changed, needsScan: outcome.needsScan, settings: { ...settings.view(), canEdit: true } });
     };
   }
@@ -250,23 +244,6 @@ function createApp({
 
 // --- Starting and stopping ---------------------------------------------------
 
-// The nightly job's work, done through the runner so it shows on the page as
-// it happens and can't overlap with a Scan now press.
-function nightlyScanThrough(runner) {
-  return async () => {
-    const outcome = await runner.start({ trigger: 'nightly' });
-    if (!outcome.started) {
-      throw new Error(
-        outcome.reason === 'already-running' ? 'a scan was already running' : 'the Working SSD and Library HDD are both unplugged',
-      );
-    }
-    const final = await outcome.done;
-    const working = final.steps.find((s) => s.drive === 'working');
-    if (working?.state !== 'saved') throw new Error(`Working SSD ${working ? working.message : 'is not set up'}`);
-    return runner.lastResult('working');
-  };
-}
-
 function main() {
   // Without these the page would load blank, so check before starting.
   if (!express || [...VENDOR_FILES.values()].some((file) => !fs.existsSync(file))) throw new ConfigError(NPM_INSTALL_ADVICE);
@@ -290,25 +267,7 @@ function main() {
   const runner = createScanRunner({ db, getConfig: () => settings.current() });
   // Port and host only come from config.json (the Settings page shows them, read-only).
   const { port, host } = config.server;
-
-  // The nightly scan: started now if it's on, and started or stopped whenever
-  // the switch on the Settings page changes (no restart needed).
-  let nightlyTask = null;
-  function applyNightly(nightlyScan) {
-    if (nightlyScan && !nightlyTask) {
-      nightlyTask = scheduleNightlyScan({ run: nightlyScanThrough(runner) });
-    } else if (!nightlyScan && nightlyTask) {
-      nightlyTask.stop();
-      nightlyTask = null;
-    }
-  }
-  function onSettingsSaved(saved) {
-    const wasOn = Boolean(nightlyTask);
-    applyNightly(saved.server.nightlyScan);
-    if (wasOn !== Boolean(nightlyTask)) console.log(`Nightly scan turned ${nightlyTask ? 'on (2:00 AM)' : 'off'} on the Settings page.`);
-  }
-
-  const app = createApp({ db, runner, settings, localOnly: isLoopback(host), onSettingsSaved });
+  const app = createApp({ db, runner, settings, localOnly: isLoopback(host) });
   const server = http.createServer(app);
 
   server.on('error', (error) => {
@@ -325,8 +284,6 @@ function main() {
   });
 
   server.listen(port, host, () => {
-    // Built in Phase 2; started only if you turned it on.
-    applyNightly(config.server.nightlyScan);
     const url = `http://localhost:${port}`;
     console.log('SSD Offload Dashboard is running.');
     console.log(`  Open ${url} in your browser.`);
@@ -334,16 +291,11 @@ function main() {
       console.log(`  On your phone (same Wi-Fi): http://<this Mac's name>.local:${port}`);
     }
     console.log('  Nothing is scanned until you press "Scan now".');
-    console.log(
-      config.server.nightlyScan
-        ? '  Nightly scan: on, at 2:00 AM while this Terminal window keeps running (Settings page, or server.nightlyScan in config.json).'
-        : '  Nightly scan: off (you can switch it on in Settings).',
-    );
     console.log(`  Settings: ${source} · Database: ${displayPath()}`);
     console.log('  Press Ctrl+C to stop.');
   });
 
-  // Ctrl+C sends SIGINT. Stop the schedule, stop answering, close the
+  // Ctrl+C sends SIGINT. Stop answering, close the
   // database, and exit. (A scan in progress just stops: it only reads, and
   // its results are saved in one transaction, so nothing is half-saved.)
   let stopping = false;
@@ -351,7 +303,6 @@ function main() {
     if (stopping) return;
     stopping = true;
     console.log('\nStopping the dashboard…');
-    nightlyTask?.stop();
     server.close();
     server.closeAllConnections();
     db.close();
@@ -373,4 +324,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createApp, isLoopback, nightlyScanThrough };
+module.exports = { createApp, isLoopback };

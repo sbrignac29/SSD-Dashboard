@@ -32,8 +32,7 @@ might not know (route, schema, module, ...). Don't just hand over code.
   When built, a "move" must be copy → verify (Vericopy checksums) → only then remove the
   source, with explicit confirmation. Nothing is ever deleted from the Archive.
 - Nothing scans on its own: starting the server never scans; only the Scan now button
-  does (or the nightly scan, which is OFF unless `server.nightlyScan` is true — the owner
-  asked for "nothing scans until I press it").
+  does (the owner asked for "nothing scans until I press it"; there is no scheduled scan).
 
 How this is enforced today:
 - The scanner only uses read-only calls (`readdir`, `lstat`, `stat`, `realpath`, `statfs`) and never follows symlinks.
@@ -54,9 +53,9 @@ How this is enforced today:
 - `src/config.js` → `assertSafeLocations()` refuses to run if the app itself, or its `data/`
   folder (e.g. via a symlink), is on any of the three drives, or if any two drive paths
   overlap. `assertAppNotInside()` does the same for a `--root` folder. `npm run scan`,
-  `npm run pin`, the nightly job, the server at startup, the scan runner (every Scan now), the
-  Pin route and every Settings save/reset call `assertSafeLocations()` before writing (a save
-  checks the NEW settings, so overlapping drive paths or a drive containing the app are refused).
+  `npm run pin`, the server at startup, the scan runner (every Scan now), the Pin route and
+  every Settings save/reset call `assertSafeLocations()` before writing (a save checks the NEW
+  settings, so overlapping drive paths or a drive containing the app are refused).
 - The server (`src/server.js`) binds `server.host` (127.0.0.1 by default), answers only
   requests whose Host is localhost/127.0.0.1/[::1] (DNS-rebinding guard; off when the owner
   opts into phone access with host 0.0.0.0), and refuses POSTs without
@@ -137,8 +136,7 @@ How this is enforced today:
 - `npm start` → `src/server.js`: Express 5, port `server.port` (7744; 7743 is Vericopy and is
   refused by config validation). It opens the database read-write once at startup (creating
   and migrating it — not a scan), checks the browser libraries are installed (else "run npm
-  install"), and schedules the nightly job only if `server.nightlyScan` is true. Ctrl+C stops
-  the schedule, closes connections and the database.
+  install"). Ctrl+C closes connections and the database.
 - Routes (all JSON; `src/web/views.js` builds the answers, read-only, testable without HTTP):
   `GET /api/drives`, `GET /api/summary`, `GET /api/projects` (filters `drive`, `tag`, `client`
   — empty `client=` means none — `from`/`to` YYYY-MM-DD local days; sorted by score, Library
@@ -154,7 +152,7 @@ How this is enforced today:
   is never scanned (only statfs): nothing reads its folders yet and walking 28 TB would make
   every scan slow. Progress % = files so far / that drive's last file count (else top-level
   folders done / total, from `onProgress`'s `foldersDone`/`foldersTotal`), drives weighted by
-  their last file counts. The nightly job, when on, runs through the same runner.
+  their last file counts.
 - Tags (plain language, shown before the score) come from the SAVED bucket: Ready → "Ready to
   move to HDD", Review → "Check first", Keep → "Keep on SSD", Keep + pinned (database or
   config) → "Pinned to SSD". Each row has a one-line reason (`shortReason`, date-based, e.g.
@@ -183,17 +181,17 @@ How this is enforced today:
 
 - Three layers: `config.example.json` ← `config.json` ← Settings page overrides (one row in the
   `settings` table, JSON keyed by setting name). `loadAppConfig()` combines them and is what
-  every command uses (`npm run scan/report/pin`, nightly; it opens the DB read-only, and an
+  every command uses (`npm run scan/report/pin`; it opens the DB read-only, and an
   outdated DB — `error.outdated` — counts as no overrides). The server uses
   `createSettingsStore({ db, loadFileConfig })` → `current()`, `view()`, `save(values)`, `reset()`.
-- `SECTIONS`/`FIELDS` list what the page can edit (key, type text/number/list/boolean, label, help,
+- `SECTIONS`/`FIELDS` list what the page can edit (key, type text/number/list, label, help,
   effect now/rescore/scan); the page renders from `GET /api/settings`, so add a field there, not in
   the HTML. Interdependent numbers save as one group (`saveAs`: `weights`, `ageDays`,
   `libraryFull`) so a later config.json edit can't split them.
 - A save parses the values, applies them to the current settings, runs `validateConfig` and
   `assertSafeLocations`, stores only values that differ from the file settings (a value set
   back to config.json's is dropped), and re-scores in the same transaction
-  (`writeSavedSettings`). `onSettingsSaved` lets `main()` start/stop the nightly task live.
+  (`writeSavedSettings`).
   Saves are refused (409) while a scan runs: the scan would re-score with the settings it
   started with and undo the change.
 - `server.port`/`server.host` are not editable (shown under "Only in config.json"): they apply at
@@ -213,7 +211,7 @@ How this is enforced today:
   pins and scoring only ever see Working SSD rows. Library rows are never scored (score/bucket
   NULL) and can't be pinned (`togglePinById` → 'not-on-working').
 - `src/jobs/scanAndSave.js` is the one "scan, then save" path (`drive` 'working' by default, or
-  'library'), used by `npm run scan`, the nightly job and Scan now. It also records the drive's
+  'library'), used by `npm run scan` and Scan now. It also records the drive's
   statfs space on the scans row. A failed scan (e.g. `ScanError`, drive unplugged) is recorded
   as a `failed` row in `scans` and changes no projects. An empty drive path is refused (it
   would resolve to the current folder).
@@ -286,14 +284,14 @@ Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`,
 
 1. **Done:** scaffold, scanner + classifier, `npm run scan` table, scoring + tests, three-drive
    config, final-export rule, drive space + move plan.
-2. **Done:** SQLite storage (`src/db.js`), `npm run scan` saves, `npm run report`, `npm run pin`,
-   nightly job (`src/jobs/nightly.js`, 2 AM via node-cron; built but not started yet).
+2. **Done:** SQLite storage (`src/db.js`), `npm run scan` saves, `npm run report`, `npm run pin`.
+   (A nightly scan job was built, then removed again at the owner's request.)
 3. **Done:** Express server (`src/server.js`, `npm start`) + Alpine.js dashboard (`public/`):
    Overview (headline, Scan now with progress, drive bar, filterable/sortable table, size
    chart), project page (Ready checklist, score parts, folder tree, Pin, "Move to HDD"
    disabled), Done HDD page (Library oldest first + Archive list past the limit). Library
-   scans saved (migration 3). Nightly job wired in but off by default (`server.nightlyScan`).
-   Settings page (migration 4): edit config from the browser, saved in the database.
+   scans saved (migration 3). Settings page (migration 4): edit config from the browser,
+   saved in the database.
 4. Notion sync (`src/notion/sync.js`): add `notion_status` as a migration, pass it to scoring
    (`donePart` already reads `notionStatus`), and fill the table's Status column.
 5. Moves via Vericopy (`src/offload/vericopy.js`) + `archive_log` hops — only when explicitly
@@ -307,7 +305,6 @@ Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`,
   modules (`require` / `module.exports`), `'use strict'`.
 - Dependencies only when a phase needs them. Now: better-sqlite3 13 (ships Node-API prebuilt
   binaries, incl. darwin-arm64/x64, so no compiler and no rebuild after a Node upgrade),
-  node-cron 4 (`schedule(expr, fn, { noOverlap })`, `task.execute()`, `task.match(date)`),
   express 5 (async route errors reach the error handler), alpinejs 3 and chart.js 4 (browser
   libraries, served from node_modules — no CDN). Phase 4 adds @notionhq/client. UI: plain
   HTML + Alpine.js, no build step.
@@ -345,8 +342,7 @@ src/server.js            the dashboard server (`npm start`): Express app, routes
 src/web/views.js         builds each API answer from the database + settings + drive space (read-only)
 src/web/scanRunner.js    Scan now: one run at a time, connected drives only, progress for GET /api/scan
 src/db.js                SQLite schema + migrations, saving scans, re-scoring, pins, saved settings (writes only in data/)
-src/jobs/scanAndSave.js  one full scan + save, used by `npm run scan` and the nightly job
-src/jobs/nightly.js      node-cron 2 AM scan (the server starts it only if server.nightlyScan is true)
+src/jobs/scanAndSave.js  one full scan + save, used by `npm run scan` and Scan now
 src/scanner/scan.js      walks the SSD (read-only), collects facts per project
 src/scanner/classify.js  sorts files into raw/proxy/export/cache/project/other
 src/scanner/parseName.js pulls a date + subject out of folder names
@@ -381,9 +377,6 @@ data/                    the only place the app writes: dashboard.db (gitignored
   `drives.working` at a different drive marks the first drive's projects missing.
 
 - The saved report has no loose files or skipped items (not stored); `npm run scan` shows them.
-
-- The nightly scan only runs while the Mac is awake and the server is running (and only if
-  `server.nightlyScan` is on); node-cron doesn't catch up on missed nights.
 
 - The Archive's folders are never scanned, so the dashboard only knows how full it is.
 
