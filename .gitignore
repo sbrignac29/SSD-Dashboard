@@ -1,0 +1,18 @@
+# Installed packages (recreated by `npm install`)
+node_modules/
+
+# Your personal settings (drive paths now, Notion keys later) — never commit
+config.json
+.env
+
+# The app's working folder: SQLite database, logs, test scratch files.
+# Only the placeholder file is tracked so the folder exists after cloning.
+data/*
+!data/.gitkeep
+
+# macOS / Windows housekeeping files
+.DS_Store
+._*
+Thumbs.db
+
+*.log

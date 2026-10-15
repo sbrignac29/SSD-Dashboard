@@ -1,0 +1,54 @@
+{
+  "ssdPath": "/Volumes/BRIGSMEDIA",
+  "archivePath": "",
+
+  "ageDays": {
+    "recent": 14,
+    "max": 120
+  },
+  "weights": {
+    "done": 0.45,
+    "age": 0.35,
+    "size": 0.20
+  },
+  "buckets": {
+    "ready": 70,
+    "review": 40
+  },
+  "doneStatuses": ["Complete", "Delivered"],
+
+  "folders": {
+    "ignore": ["$RECYCLE.BIN", "System Volume Information"],
+    "shared": [
+      "Resolve Project Library",
+      "BrigsMedia Assets",
+      "Project files",
+      "ProRes Proxies",
+      "Proxy",
+      "FINAL EXPORTS",
+      "FINAL FINAL RENDERS"
+    ],
+    "containers": ["NCHS Football", "Next Elite Soccer Training"],
+    "keepPinned": []
+  },
+
+  "fileTypes": {
+    "projectExtensions": [".drp", ".drt", ".prproj", ".aep", ".aepx", ".fcpxml"],
+    "videoExtensions": [
+      ".mov", ".mp4", ".m4v", ".mxf", ".braw", ".r3d", ".ari", ".crm", ".mts", ".m2ts",
+      ".avi", ".mkv", ".insv", ".360", ".mpg", ".mpeg", ".webm", ".wmv", ".3gp", ".dv"
+    ],
+    "photoExtensions": [
+      ".jpg", ".jpeg", ".heic", ".heif", ".png", ".tif", ".tiff", ".dng", ".cr2", ".cr3",
+      ".nef", ".arw", ".raf", ".orf", ".rw2", ".pef", ".srw", ".gpr", ".dpx", ".exr"
+    ],
+    "audioExtensions": [".wav", ".bwf", ".mp3", ".aac", ".m4a", ".aif", ".aiff", ".flac", ".caf"],
+    "proxyExtensions": [".lrv"],
+    "cacheExtensions": [".pek", ".cfa", ".mcdb", ".pkf"],
+    "cacheFolderWords": ["cache", "caches", "peak files", "render files", "analysis files", "video previews", "audio previews"],
+    "proxyFolderWords": ["proxy", "proxies", "optimized media"],
+    "proxyFileWords": ["proxy"],
+    "exportFolderWords": ["export", "exports", "exported", "deliverable", "deliverables", "render", "renders", "output", "outputs"],
+    "exportFileWords": ["final", "export", "exported", "master", "deliverable"]
+  }
+}

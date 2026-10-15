@@ -1,0 +1,16 @@
+{
+  "name": "ssd-offload-dashboard",
+  "version": "0.1.0",
+  "description": "Local dashboard that finds old or finished video/photo projects on a working SSD and ranks them for offloading to archive storage.",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "scan": "node src/cli/scan.js",
+    "scan:details": "node src/cli/scan.js --details",
+    "test": "node --test tests/"
+  }
+}
