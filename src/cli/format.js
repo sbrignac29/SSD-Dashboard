@@ -141,7 +141,7 @@ function scopeNote(scan) {
     '            Size scores only compare projects within THIS scan, so scores can run higher than in a full scan.',
   ];
   if (scan.drive !== 'working') {
-    lines.push('            Ready/Review/Keep describe Move 1 (SSD → Library). The Library → Archive view comes in Phase 3.');
+    lines.push('            Ready/Review/Keep describe Move 1 (SSD → Library). For Move 2 (Library → Archive), see the dashboard\'s Done HDD page (npm start).');
   }
   return lines;
 }
@@ -299,7 +299,7 @@ function pinSources(p) {
 
 function exportDetail(p) {
   if (p.hasFinalExport) return `final — ${p.finalExportFile}`;
-  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no export counted as final — see README section 6)`;
+  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no export counted as final — see README section 7)`;
   return 'none found in this folder';
 }
 
@@ -370,7 +370,7 @@ function drivesSection({ spaces, plan, libraryFull }, paint) {
       paint.yellow(
         `  Move about ${formatGB(plan.archiveBytesNeeded)} GB of the Library's oldest projects to the Archive ` +
           `${plan.readyCount > 0 ? 'first, ' : ''}to bring it down to ${libraryFull.targetPercent}%` +
-          `${plan.readyCount > 0 ? ' after this move' : ''}. (Phase 3 will list which ones.)`,
+          `${plan.readyCount > 0 ? ' after this move' : ''}. (The dashboard\'s Done HDD page lists which ones: npm start.)`,
       ),
     );
   }

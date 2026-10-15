@@ -52,6 +52,10 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Vericopy (the copy-and-verify app) runs at http://localhost:7743, so the
+// dashboard must use a different port.
+const VERICOPY_PORT = 7743;
+
 // The three drives in the workflow, in the order projects travel:
 //   working (2TB SSD: cards land here, editing happens here)
 //   → library (2TB HDD: finished, recent projects)
@@ -106,6 +110,20 @@ function validateConfig(config) {
     problems.push('"libraryFull.startAtPercent" must be a percentage between 1 and 100, e.g. 90.');
   } else if (!Number.isFinite(full.targetPercent) || full.targetPercent < 0 || full.targetPercent >= full.startAtPercent) {
     problems.push('"libraryFull.targetPercent" must be a percentage smaller than "startAtPercent", e.g. 70.');
+  }
+
+  // The dashboard server (npm start). Vericopy already uses 7743.
+  const server = config.server || {};
+  if (!Number.isInteger(server.port) || server.port < 1024 || server.port > 65535) {
+    problems.push('"server.port" must be a whole number between 1024 and 65535, e.g. 7744.');
+  } else if (server.port === VERICOPY_PORT) {
+    problems.push(`"server.port" can't be ${VERICOPY_PORT}: Vericopy uses that port. Try 7744.`);
+  }
+  if (typeof server.host !== 'string' || server.host.trim() === '') {
+    problems.push('"server.host" must be "127.0.0.1" (this Mac only) or "0.0.0.0" (also your phone, on the same Wi-Fi).');
+  }
+  if (typeof server.nightlyScan !== 'boolean') {
+    problems.push('"server.nightlyScan" must be true or false (no quotes).');
   }
 
   const weights = config.weights || {};

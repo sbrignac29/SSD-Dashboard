@@ -3,15 +3,280 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SSD Offload Dashboard</title>
+    <title>SSD Offload</title>
     <link rel="stylesheet" href="styles.css" />
+    <!-- Apply a saved Light/Dark choice before the page draws (no flash). -->
+    <script>
+      try {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+    <!-- Order matters: our code first, then Chart.js, then Alpine (which starts the page). -->
+    <script src="js/common.js" defer></script>
+    <script src="js/overview.js" defer></script>
+    <script src="vendor/chart.umd.min.js" defer></script>
+    <script src="vendor/alpine.min.js" defer></script>
   </head>
   <body>
-    <!-- Phase 3: the dashboard table goes here, built with Alpine.js -->
-    <main>
-      <h1>SSD Offload Dashboard</h1>
-      <p>The dashboard arrives in Phase 3. For now, run <code>npm run scan</code> or <code>npm run report</code> in Terminal.</p>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/">SSD Offload</a>
+        <nav aria-label="Pages">
+          <a href="/" aria-current="page">Overview</a>
+          <a href="library.html">Done HDD</a>
+        </nav>
+        <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
+      </div>
+    </header>
+
+    <!-- x-data: this whole <main> is one Alpine component, overviewPage() in js/overview.js. -->
+    <main x-data="overviewPage()" x-cloak>
+      <div class="banner banner-error" x-show="error" role="alert">
+        <p class="banner-title">Something needs fixing</p>
+        <p x-text="error"></p>
+      </div>
+
+      <!-- Headline + Scan now -->
+      <div class="row-2">
+        <section class="card headline" aria-labelledby="headline-label">
+          <p class="label" id="headline-label">Space you could free on the SSD</p>
+          <template x-if="summary && summary.hasScan">
+            <div>
+              <p class="hero-number" x-text="formatBytes(summary.ready.bytes)"></p>
+              <div class="headline-lines">
+                <p x-show="summary.ready.count > 0">
+                  <strong x-text="plural(summary.ready.count, 'project')"></strong>
+                  <span x-text="summary.ready.count === 1 ? 'is' : 'are'"></span> ready to move to the HDD.
+                </p>
+                <p x-show="summary.ready.count === 0">Nothing is ready to move to the HDD yet.</p>
+                <p x-show="summary.ready.count > 0 && summary.working.percentNow !== null">
+                  The SSD would go from
+                  <strong x-text="formatPercent(summary.working.percentNow)"></strong> to
+                  <strong x-text="formatPercent(summary.working.percentAfter)"></strong> full<span
+                    x-show="summary.working.lastKnown"> (as of the last scan)</span>.
+                </p>
+                <p x-show="summary.ready.count > 0" x-text="libraryLine()"></p>
+                <p x-show="!summary.working.connected" class="muted">
+                  The Working SSD isn't connected — these are the results of the last scan,
+                  <span x-text="formatDateTime(summary.lastScan.at)"></span>.
+                </p>
+              </div>
+              <div class="headline-actions">
+                <button class="button" type="button" x-show="summary.ready.count > 0" @click="showOnly('ready')">
+                  Show the ready projects
+                </button>
+              </div>
+              <div class="banner banner-warn" style="margin-top: 14px" x-show="summary.library.status === 'full-now'">
+                <p>
+                  <strong>The Library HDD is past its <span x-text="summary.library.limitPercent"></span>% limit</strong>
+                  (<span x-text="formatPercent(summary.library.percentNow)"></span> full).
+                  <a href="library.html">See which projects to move to the Archive →</a>
+                </p>
+              </div>
+            </div>
+          </template>
+          <template x-if="summary && !summary.hasScan">
+            <div>
+              <p class="hero-number">—</p>
+              <p class="headline-lines">No scan yet. Press <strong>Scan now</strong> to look at your SSD.
+                Scanning only reads the drives — nothing on them ever changes.</p>
+            </div>
+          </template>
+          <p x-show="!summary && !error" class="muted">Loading…</p>
+        </section>
+
+        <section class="card scan-card" aria-label="Scan">
+          <button class="button button-primary scan-button" type="button" @click="startScan()" :disabled="scan.running"
+            x-text="scan.running ? 'Scanning…' : 'Scan now'"></button>
+          <div class="progress" x-show="scan.running" role="progressbar" aria-label="Scan progress" aria-valuemin="0"
+            aria-valuemax="100" :aria-valuenow="Math.round(scan.percent)">
+            <div class="progress-fill" :style="`width: ${Math.max(2, scan.percent)}%`"></div>
+          </div>
+          <p class="scan-message" aria-live="polite" x-show="scanMessage()" x-text="scanMessage()"></p>
+          <p>
+            <span class="muted">Last scanned:</span>
+            <strong x-text="summary && summary.lastScan ? formatDateTime(summary.lastScan.at) : 'never'"></strong>
+            <span class="muted" x-show="summary && summary.lastScan"
+              x-text="summary && summary.lastScan ? `(${formatAgo(summary.lastScan.at)})` : ''"></span>
+          </p>
+          <p class="muted small">
+            Reads the Working SSD and the Library HDD, whichever are plugged in.
+            It never changes anything on them.
+            <span x-show="summary" x-text="summary && summary.nightlyScan ? 'Nightly 2 AM scan: on.' : 'Nightly 2 AM scan: off.'"></span>
+          </p>
+        </section>
+      </div>
+
+      <!-- Drives -->
+      <section aria-labelledby="drives-title">
+        <h2 id="drives-title" class="visually-hidden">Drives</h2>
+        <div class="drives">
+          <template x-for="d in drives" :key="d.drive">
+            <article class="card drive-card">
+              <div>
+                <h3 x-text="d.label"></h3>
+                <p class="role" x-text="d.role"></p>
+              </div>
+              <template x-if="d.connected">
+                <div style="display: grid; gap: 8px">
+                  <div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100"
+                    :aria-valuenow="Math.round(d.space.usedPercent)" :aria-label="`${d.label} used`">
+                    <div class="meter-fill" :class="meterLevel(d.space.usedPercent, d.limitPercent || 90)"
+                      :style="`width: ${Math.min(100, d.space.usedPercent)}%`"></div>
+                    <div class="meter-limit" x-show="d.limitPercent" :style="`left: ${d.limitPercent}%`"
+                      :title="`Limit: ${d.limitPercent}%`"></div>
+                  </div>
+                  <p>
+                    <strong x-text="formatBytes(d.space.usedBytes)"></strong> used of
+                    <span x-text="formatBytes(d.space.totalBytes)"></span>
+                    (<span x-text="formatPercent(d.space.usedPercent)"></span>) ·
+                    <strong x-text="formatBytes(d.space.freeBytes)"></strong> free
+                  </p>
+                </div>
+              </template>
+              <template x-if="!d.connected">
+                <div style="display: grid; gap: 8px">
+                  <div class="meter is-empty" aria-hidden="true"></div>
+                  <p>
+                    <span class="not-connected">Not connected</span>
+                    <span class="muted" x-show="d.lastKnownSpace"
+                      x-text="d.lastKnownSpace ? ` · was ${formatPercent(d.lastKnownSpace.usedPercent)} full at its last scan` : ''"></span>
+                  </p>
+                </div>
+              </template>
+              <p class="small muted" x-show="d.scannedByButton">
+                Last scanned:
+                <span x-text="d.lastScan ? `${formatDateTime(d.lastScan.at)} (${formatAgo(d.lastScan.at)})` : 'never'"></span>
+              </p>
+              <p class="small muted" x-show="!d.scannedByButton">Space only — its folders aren't scanned.</p>
+              <p class="small muted" x-show="d.lastFailure"
+                x-text="d.lastFailure ? `The scan on ${formatDateTime(d.lastFailure.at)} didn't finish: ${d.lastFailure.message}` : ''"></p>
+            </article>
+          </template>
+        </div>
+      </section>
+
+      <!-- Projects -->
+      <section class="card" aria-labelledby="projects-title" id="projects">
+        <div class="card-head">
+          <h2 id="projects-title">Projects on the Working SSD</h2>
+          <p class="muted small" x-show="list" x-text="list ? `${plural(list.totals.count, 'project')} · ${formatBytes(list.totals.bytes)}` : ''"></p>
+        </div>
+
+        <div class="filters" x-show="list && list.totalCount > 0">
+          <div class="filter-group">
+            <span class="filter-label" id="tag-filter-label">Tag</span>
+            <div class="chips" role="group" aria-labelledby="tag-filter-label">
+              <button type="button" class="chip" :aria-pressed="filters.tag === ''" @click="setTag('')">
+                All<span class="count" x-text="list ? tagTotal() : ''"></span>
+              </button>
+              <template x-for="t in (list ? list.tags : [])" :key="t.id">
+                <button type="button" class="chip" :aria-pressed="filters.tag === t.id" @click="setTag(t.id)" :title="t.hint">
+                  <span x-text="t.label"></span><span class="count" x-text="list.tagCounts[t.id]"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+          <label class="filter-group">
+            <span class="filter-label">Client</span>
+            <select x-model="filters.client" @change="filtersChanged()">
+              <option value="*" :selected="filters.client === '*'">All clients</option>
+              <template x-for="c in (list ? list.clients : [])" :key="c">
+                <option :value="c" :selected="filters.client === c" x-text="c"></option>
+              </template>
+              <template x-if="list && list.hasNoClient">
+                <option value="" :selected="filters.client === ''">No client</option>
+              </template>
+            </select>
+          </label>
+          <div class="filter-group">
+            <span class="filter-label" id="date-filter-label">Last edited</span>
+            <div class="date-range" role="group" aria-labelledby="date-filter-label">
+              <input type="date" aria-label="From" x-model="filters.from" @change="filtersChanged()" />
+              <span class="muted">to</span>
+              <input type="date" aria-label="To" x-model="filters.to" @change="filtersChanged()" />
+            </div>
+          </div>
+          <button type="button" class="link-button" x-show="hasFilters()" @click="clearFilters()">Clear filters</button>
+        </div>
+
+        <div class="table-wrap" x-show="list && list.projects.length > 0">
+          <table class="stack-table">
+            <thead>
+              <tr>
+                <template x-for="col in columns" :key="col.key">
+                  <th scope="col" :class="col.right ? 'right' : ''"
+                    :aria-sort="sort.key === col.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : null">
+                    <button type="button" class="sort-button" @click="sortBy(col.key)">
+                      <span x-text="col.label"></span>
+                      <span class="arrow" aria-hidden="true" x-text="sort.key === col.key && sort.dir === 'desc' ? '▼' : '▲'"></span>
+                    </button>
+                  </th>
+                </template>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="p in sortedProjects()" :key="p.id">
+                <tr class="clickable" @click="openProject($event, p)">
+                  <td class="cell-name" data-label="Project">
+                    <a class="project-name" :href="`project.html?id=${p.id}`" x-text="p.name"></a>
+                  </td>
+                  <td data-label="Client" :class="{ 'phone-hide': !p.client }" x-text="p.client || '—'"></td>
+                  <td data-label="Size" class="right num" x-text="formatBytes(p.sizeBytes)"></td>
+                  <td data-label="Last edited" class="num" x-text="formatDate(p.lastEdited)"></td>
+                  <td data-label="Status" class="phone-hide" x-text="p.status || '—'" title="Notion status: connects in Phase 4"></td>
+                  <td data-label="Tag" class="cell-tag">
+                    <div>
+                      <span class="tag" :class="`tag-${p.tag}`">
+                        <span class="tag-icon" aria-hidden="true" x-text="TAG_ICONS[p.tag]"></span>
+                        <span x-text="tagLabel(p.tag)"></span>
+                      </span>
+                      <span class="score" :title="'Score (0–100)'" x-text="p.score === null ? '' : p.score.toFixed(1)"></span>
+                      <span class="reason" x-text="p.reason"></span>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="empty" x-show="list && list.totalCount > 0 && list.projects.length === 0">
+          <p>No projects match these filters.</p>
+          <button type="button" class="button" @click="clearFilters()">Clear filters</button>
+        </div>
+        <div class="empty" x-show="list && list.totalCount === 0">
+          <p x-show="summary && !summary.hasScan">Nothing to show yet — press <strong>Scan now</strong>.</p>
+          <p x-show="summary && summary.hasScan">The last scan found no project folders on the Working SSD.</p>
+        </div>
+        <p class="muted small" style="margin-top: 12px" x-show="summary && summary.shared.count > 0"
+          x-text="summary ? `Also on the SSD: ${plural(summary.shared.count, 'shared folder')} (${formatBytes(summary.shared.bytes)}) — ${summary.shared.names.join(', ')}. Shared folders are measured but never moved.` : ''"></p>
+      </section>
+
+      <!-- Size breakdown -->
+      <section class="card" aria-labelledby="sizes-title" x-show="list && list.totals.count > 0">
+        <div class="card-head">
+          <h2 id="sizes-title">What's using the space</h2>
+          <p class="muted small" x-text="list ? `The ${plural(list.totals.count, 'project')} shown above, by file type` : ''"></p>
+        </div>
+        <div class="chart-box"><canvas x-ref="sizeChart" role="img" :aria-label="chartLabel()"></canvas></div>
+        <details class="show-numbers">
+          <summary>Show the numbers</summary>
+          <table class="numbers-table">
+            <thead><tr><th>Type</th><th class="right">Size</th><th class="right">Share</th></tr></thead>
+            <tbody>
+              <template x-for="row in (list ? sizeRows(list.totals.byType) : [])" :key="row.type">
+                <tr>
+                  <td x-text="row.label"></td>
+                  <td class="right num" x-text="formatBytes(row.bytes)"></td>
+                  <td class="right num" x-text="`${row.percent.toFixed(0)}%`"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </details>
+      </section>
     </main>
-    <script src="app.js"></script>
   </body>
 </html>

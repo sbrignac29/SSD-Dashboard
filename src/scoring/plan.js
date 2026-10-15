@@ -56,4 +56,60 @@ function planMoves({ projects, spaces, libraryFull }) {
   return plan;
 }
 
-module.exports = { planMoves };
+// Move 2: which Library projects to move to the Archive, oldest first, once
+// the Library is past libraryFull.startAtPercent — enough to bring it down to
+// libraryFull.targetPercent. (The dashboard's Done HDD page shows this.)
+//   libraryProjects: the Library's saved projects (relPath, sizeBytes, lastEditedMs, kind, missing)
+//   space:           the Library's { totalBytes, freeBytes } (now, or from its last scan); null if unknown
+//   incomingBytes:   the Ready projects waiting on the Working SSD (Move 1 lands on the Library)
+// Two cases need moves:
+//   'full-now'   – the Library is past the limit already: the list brings what's
+//                  on it now down to the target (percentAfterIncoming then says
+//                  where the Ready projects would take it)
+//   'full-after' – it's under the limit, but the Ready projects would take it
+//                  past: the list makes room for them first
+// Returns null if the space is unknown, else
+//   { status: 'ok' | 'full-now' | 'full-after', usedPercent, incomingBytes, percentAfterIncoming,
+//     bytesToFree, moves: [projects, oldest first], movesBytes, percentAfterMoves,
+//     enough (false if moving every dated project still isn't enough), roomBeforeLimitBytes }
+function planArchiveMoves({ libraryProjects, space, libraryFull, incomingBytes = 0 }) {
+  if (!space || !(space.totalBytes > 0)) return null;
+  const usedBytes = space.totalBytes - space.freeBytes;
+  const limitBytes = (libraryFull.startAtPercent / 100) * space.totalBytes;
+  const result = {
+    status: 'ok',
+    usedPercent: percentOf(usedBytes, space.totalBytes),
+    incomingBytes,
+    percentAfterIncoming: percentOf(usedBytes + incomingBytes, space.totalBytes),
+    bytesToFree: 0,
+    moves: [],
+    movesBytes: 0,
+    percentAfterMoves: null,
+    enough: true,
+    roomBeforeLimitBytes: Math.max(0, limitBytes - usedBytes - incomingBytes),
+  };
+  if (result.usedPercent >= libraryFull.startAtPercent) result.status = 'full-now';
+  else if (incomingBytes > 0 && result.percentAfterIncoming >= libraryFull.startAtPercent) result.status = 'full-after';
+  if (result.status === 'ok') return result;
+
+  const usedToPlanFor = result.status === 'full-now' ? usedBytes : usedBytes + incomingBytes;
+  result.bytesToFree = Math.max(0, usedToPlanFor - (libraryFull.targetPercent / 100) * space.totalBytes);
+  // Oldest = least recently edited. Projects with no dated files can't be
+  // placed in that order, so they're never suggested.
+  const oldestFirst = libraryProjects
+    .filter((p) => p.kind === 'project' && !p.missing && p.lastEditedMs !== null && p.lastEditedMs !== undefined)
+    .sort((a, b) => a.lastEditedMs - b.lastEditedMs || b.sizeBytes - a.sizeBytes);
+  for (const project of oldestFirst) {
+    if (result.movesBytes >= result.bytesToFree) break;
+    result.moves.push(project);
+    result.movesBytes += project.sizeBytes;
+  }
+  result.enough = result.movesBytes >= result.bytesToFree;
+  result.percentAfterMoves = percentOf(Math.max(0, usedToPlanFor - result.movesBytes), space.totalBytes);
+  if (result.status === 'full-now') {
+    result.percentAfterIncoming = percentOf(Math.max(0, usedBytes - result.movesBytes) + incomingBytes, space.totalBytes);
+  }
+  return result;
+}
+
+module.exports = { planMoves, planArchiveMoves };

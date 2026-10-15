@@ -3,9 +3,11 @@
 // The nightly scan: at 2:00 AM every night, scan the SSD and save the results
 // to the database, so the dashboard has fresh numbers each morning.
 //
-// Phase 2 builds the job; nothing starts it yet. In Phase 3 the dashboard
-// server will call scheduleNightlyScan() when it starts, and the scans run
-// for as long as the server is running.
+// It's OFF unless you turn it on: the dashboard server (npm start) calls
+// scheduleNightlyScan() only when config.json has "nightlyScan": true under
+// "server", and the scans run for as long as the server is running. (The
+// server passes its own `run`, which scans the Working SSD and the Library
+// through the same runner as the Scan now button.)
 //
 // It uses node-cron, a library that runs a function on a schedule written as
 // a "cron expression": five fields, separated by spaces.

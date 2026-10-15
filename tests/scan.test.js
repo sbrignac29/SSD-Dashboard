@@ -365,3 +365,47 @@ describe('scanner when the drive disappears mid-scan', () => {
     await expectUnplugError(6);
   });
 });
+
+describe('folder tree and progress', () => {
+  let drive;
+
+  before(() => {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    drive = fs.mkdtempSync(path.join(DATA_DIR, '.test-tree-ssd-'));
+    file('Deep/Footage/Card A/Clips/Day 1/a.mov', 400, 10, drive);
+    file('Deep/Footage/Card A/b.mov', 100, 10, drive);
+    file('Deep/Footage/Card B/c.mov', 300, 10, drive);
+    file('Deep/Exports/final.mp4', 50, 10, drive);
+    file('Deep/notes.txt', 5, 10, drive);
+    file('Other/x.mov', 10, 10, drive);
+  });
+
+  after(() => removeTestFolder(drive));
+
+  function treeConfig() {
+    return withDefaults({ drives: { working: drive, library: '', archive: '' } });
+  }
+
+  it("records each project's biggest subfolders, three levels deep, biggest first", async () => {
+    const scan = await scanDrive(treeConfig(), { now: NOW });
+    const deep = scan.projects.find((p) => p.name === 'Deep');
+    assert.deepEqual(deep.subfolders, [
+      { path: 'Footage', sizeBytes: 800, fileCount: 3 },
+      { path: 'Footage/Card A', sizeBytes: 500, fileCount: 2 },
+      { path: 'Footage/Card A/Clips', sizeBytes: 400, fileCount: 1 }, // "Day 1" is a 4th level: left out
+      { path: 'Footage/Card B', sizeBytes: 300, fileCount: 1 },
+      { path: 'Exports', sizeBytes: 50, fileCount: 1 },
+    ]);
+  });
+
+  it('reports how many top-level folders are done, for a progress bar', async () => {
+    const updates = [];
+    await scanDrive(treeConfig(), { now: NOW, onProgress: (update) => updates.push(update) });
+    assert.ok(updates.length > 0);
+    assert.ok(updates.every((u) => u.foldersTotal === 2));
+    assert.deepEqual(
+      { done: updates.at(-1).foldersDone, files: updates.at(-1).filesScanned },
+      { done: 2, files: 6 },
+    );
+  });
+});
