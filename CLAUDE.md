@@ -16,8 +16,11 @@ might not know (route, schema, module, ...). Don't just hand over code.
 How this is enforced today:
 - The scanner only uses read-only calls (`readdir`, `lstat`, `stat`, `realpath`) and never follows symlinks.
 - `tests/safety.test.js` fails if file-changing calls (writeFile, rm, rename, mkdir, ...) or
-  `child_process` appear anywhere in `src/`. When Phase 2 adds `src/db.js` writing to `data/`,
-  allow exactly that in the test's allowlist — nothing broader.
+  `child_process` appear anywhere in `src/` (direct calls, references like `map(fsp.unlink)`,
+  bracket lookups, destructuring). When Phase 2 adds `src/db.js` writing to `data/`, allow
+  exactly that in the test's allowlist — nothing broader. Note that `new Database(path)`
+  (better-sqlite3) is not a name the guard knows, so db.js must itself assert its path is
+  inside `DATA_DIR`.
 - `src/config.js` → `assertSafeLocations()` refuses to run if the app itself lives on the SSD,
   or if `archivePath` overlaps `ssdPath`.
 - `tests/scan.test.js` snapshots a fake drive before and after a scan and asserts nothing changed.
@@ -33,9 +36,13 @@ How this is enforced today:
   - `folders.ignore`: skipped entirely (`$RECYCLE.BIN`, `System Volume Information`).
     Hidden items (names starting with `.`) are always skipped at the top level.
   - Loose files at the top level (or directly inside a container) are listed, not ranked.
+  - Paths are always relative to the SSD top, so `--root` scans of a subfolder still match
+    config lists. "Name not found" config warnings only run on whole-SSD scans.
 - The scanner records per project: total size, size by type (raw, proxy, export, cache,
   project, other), newest modified date, last save of a project file (.drp/.prproj/...),
-  and whether it has exports. It uses **modification time (mtime), never access time**.
+  and whether it has exports (any file classified `export`: inside an export-word folder
+  *within* the project, or a video whose name has an export word — the project's own name
+  never counts, e.g. "Soccer Finals Temp"). It records which file set has-export. It uses **modification time (mtime), never access time**.
   Hidden/housekeeping files (`.DS_Store`, `._*`, `Thumbs.db`) count toward size but
   never toward "last edited" — Finder rewrites them just from browsing.
 - Scoring: `Score = 0.45*Done + 0.35*Age + 0.20*Size`, each part 0–100.
@@ -44,8 +51,12 @@ How this is enforced today:
   - Size: project size relative to the largest ranked project
   - Buckets: Ready (70+), Review (40–69), Keep (<40); score is rounded to 1 decimal
     before bucketing so the shown number and the bucket always agree
-  - Never "Ready" if edited in the last 14 days (or no dated files) → capped at Review.
-    Pinned as Keep (`folders.keepPinned`) → always Keep.
+  - Never "Ready" (capped at Review) if edited in the last 14 days, or if the last edit is
+    uncertain: no dated files, future-dated files (scanner ignores dates > 1 day ahead), or
+    unreadable folders (`incomplete`). Pinned as Keep (`folders.keepPinned`, a container pin
+    covers all its subfolders) → always Keep.
+  - Report order: Ready, Review, Keep; then score; then size.
+  - If the drive disappears mid-scan, the scan throws `ScanError` rather than reporting 0 GB.
 - Results go in SQLite (better-sqlite3) so the dashboard loads instantly (Phase 2).
 - Later phases: Notion sync for project status, offloading through the owner's existing
   Vericopy app (localhost:7743, a Node rsync UI with checksum verification), archive log.
@@ -59,7 +70,7 @@ How this is enforced today:
 
 ## Stack and conventions
 
-- Node.js ≥ 20, CommonJS modules (`require` / `module.exports`), `'use strict'`.
+- Node.js ≥ 20 (22+ recommended), CommonJS modules (`require` / `module.exports`), `'use strict'`.
 - No npm dependencies until a phase needs them (Phase 2 adds express, better-sqlite3;
   later node-cron, @notionhq/client). UI: plain HTML + Alpine.js.
 - Tests use Node's built-in runner (`node:test` + `node:assert/strict`), files in `tests/*.test.js`.
@@ -92,6 +103,11 @@ data/                    the only place the app writes (gitignored)
 ```
 
 ## Known limitations / ideas
+
+- Exports saved in the shared `FINAL EXPORTS` / `FINAL FINAL RENDERS` folders or loose at the
+  drive root, and `.prproj` files kept in the shared `Project files` folder, are not linked to
+  their project (it shows Export: no, and edits there don't refresh its date). The README asks
+  the owner to save these inside each project folder. A later phase could match by name.
 
 - DaVinci Resolve projects live in the shared `Resolve Project Library` database, not in
   project folders. Editing in Resolve without rendering new files doesn't change a project

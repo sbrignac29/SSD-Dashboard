@@ -45,9 +45,19 @@ function toWords(name) {
   return ` ${words} `;
 }
 
-// True if any phrase (already in toWords form) appears in `words`.
-function hasPhrase(words, phrases) {
-  return phrases.some((phrase) => words.includes(phrase));
+// Turns a config word like "final" or "peak files" into a pattern that finds
+// it as whole words in a toWords() string. A version or number stuck on the
+// end still counts — "FINALv2", "Final2", "Exports2025" — but other letters
+// don't: "Finally" is not "final".
+function phrasePattern(phrase) {
+  const words = toWords(phrase).trim();
+  if (words === '') return null;
+  return new RegExp(` ${words}(?:v?\\d+)? `);
+}
+
+// True if any phrase pattern matches `words` (a toWords() string).
+function hasPhrase(words, patterns) {
+  return patterns.some((pattern) => pattern.test(words));
 }
 
 function normalizeExtension(ext) {
@@ -59,7 +69,7 @@ function normalizeExtension(ext) {
 // once (instead of once per file) keeps scans of huge drives fast.
 function createClassifier(fileTypes) {
   const extensions = (list) => new Set((list || []).map(normalizeExtension));
-  const phrases = (list) => (list || []).map(toWords).filter((phrase) => phrase.trim() !== '');
+  const phrases = (list) => (list || []).map(phrasePattern).filter(Boolean);
 
   const rules = {
     projectExtensions: extensions(fileTypes.projectExtensions),

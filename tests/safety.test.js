@@ -4,8 +4,13 @@
 // change files on disk. The scanner only needs to READ; the only writing the
 // app will ever do is in data/ (Phase 2's database).
 //
+// This is a tripwire, not a proof: it looks for the NAMES of file-changing
+// functions, whether they're called directly (fs.rm(...)), passed around
+// (files.map(fsp.unlink)), looked up by name (fsp['rm']) or renamed
+// (const { rm: remove } = fsp).
+//
 // If a future phase legitimately needs to write inside data/, add exactly that
-// file and call to ALLOWED below — never loosen the rule for the whole app.
+// file and name to ALLOWED below — never loosen the rule for the whole app.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -14,57 +19,107 @@ const path = require('node:path');
 
 const SRC_DIR = path.join(__dirname, '..', 'src');
 
-// Calls that create, change, move or delete files (both the plain and "Sync"
-// versions match, e.g. rename( and renameSync( ).
-const FORBIDDEN_CALLS = [
-  'writeFile', 'appendFile', 'createWriteStream', 'open', 'openSync',
+// Functions that create, change, move or delete files. Each also matches its
+// "Sync" version (rename / renameSync).
+const FORBIDDEN_NAMES = [
+  'writeFile', 'appendFile', 'createWriteStream', 'WriteStream', 'open', 'openSync',
   'unlink', 'rm', 'rmdir', 'rename', 'mkdir', 'mkdtemp',
   'copyFile', 'cp', 'symlink', 'link', 'truncate', 'ftruncate',
   'utimes', 'lutimes', 'futimes', 'chmod', 'lchmod', 'fchmod', 'chown', 'lchown', 'fchown',
 ];
-const FORBIDDEN_CALL_PATTERN = new RegExp(`\\b(${FORBIDDEN_CALLS.join('|')})(Sync)?\\s*\\(`);
-// Running other programs (e.g. `rm -rf`) is just as dangerous.
-const FORBIDDEN_MODULE_PATTERN = /require\(\s*['"](node:)?child_process['"]\s*\)/;
+const NAMES = `(${FORBIDDEN_NAMES.join('|')})(Sync)?`;
+const FORBIDDEN_PATTERNS = [
+  // A direct call: rm(  renameSync(
+  new RegExp(`\\b${NAMES}\\s*(\\?\\.)?\\(`),
+  // Used as a property, called or not: fsp.unlink  fs.promises.rm
+  new RegExp(`\\.\\s*${NAMES}\\b`),
+  // Looked up by name: fsp['rm']
+  new RegExp(`\\[\\s*['"\`]${NAMES}['"\`]\\s*\\]`),
+  // Pulled out of a module: const { rm } = ...  /  { rename: move }
+  new RegExp(`[{,]\\s*${NAMES}\\s*[:,}]`),
+  // Running other programs (e.g. `rm -rf`) is just as dangerous.
+  /\b(require|import)\s*\(\s*['"`](node:)?child_process/,
+  /\bfrom\s+['"`](node:)?child_process/,
+];
 
-// file (relative to src/) -> list of calls it may use. Empty in Phase 1.
+// file (relative to src/) -> list of names it may use. Empty in Phase 1.
 const ALLOWED = {};
 
-function listJsFiles(dir) {
+function listCodeFiles(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const abs = path.join(dir, entry.name);
-    if (entry.isDirectory()) return listJsFiles(abs);
-    return entry.name.endsWith('.js') ? [abs] : [];
+    if (entry.isDirectory()) return listCodeFiles(abs);
+    return /\.(c|m)?js$/.test(entry.name) ? [abs] : [];
   });
 }
 
-// Removes comments so explanations like "never rename(...)" don't trip the check.
+// Blanks out comment lines so explanations like "never rename(...)" don't trip
+// the check. Deliberately simple and line-based: it only removes lines that
+// START as comments, plus a " // ..." at the end of a line. (Text inside quotes
+// that merely looks like a comment, e.g. 'Exports/*.mp4', can't hide code.)
 function stripComments(code) {
-  return code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  return code
+    .split('\n')
+    .map((line) => (/^\s*(\/\/|\/\*|\*)/.test(line) ? '' : line.replace(/\s\/\/\s.*$/, '')))
+    .join('\n');
+}
+
+function findProblems(code, allowed = []) {
+  const problems = [];
+  stripComments(code)
+    .split('\n')
+    .forEach((line, index) => {
+      for (const pattern of FORBIDDEN_PATTERNS) {
+        const match = line.match(pattern);
+        if (!match) continue;
+        const name = FORBIDDEN_NAMES.find((n) => match[0].includes(n));
+        if (name && allowed.includes(name)) continue;
+        problems.push(`line ${index + 1}: ${match[0].trim()}`);
+      }
+    });
+  return problems;
 }
 
 test('nothing in src/ can write, move, rename or delete files', () => {
   const problems = [];
-  for (const file of listJsFiles(SRC_DIR)) {
+  for (const file of listCodeFiles(SRC_DIR)) {
     const relative = path.relative(SRC_DIR, file);
-    const lines = stripComments(fs.readFileSync(file, 'utf8')).split('\n');
-    lines.forEach((line, index) => {
-      const match = line.match(FORBIDDEN_CALL_PATTERN);
-      if (match && !(ALLOWED[relative] || []).includes(match[1])) {
-        problems.push(`${relative}:${index + 1} calls ${match[0].trim()}`);
-      }
-      if (FORBIDDEN_MODULE_PATTERN.test(line)) {
-        problems.push(`${relative}:${index + 1} loads child_process`);
-      }
-    });
+    const found = findProblems(fs.readFileSync(file, 'utf8'), ALLOWED[relative] || []);
+    problems.push(...found.map((problem) => `${relative} ${problem}`));
   }
   assert.deepEqual(problems, [], `Safety rule broken — the app must never change files outside data/:\n${problems.join('\n')}`);
 });
 
-test('the safety check actually catches forbidden calls', () => {
-  assert.match('await fsp.rm(target, { recursive: true })', FORBIDDEN_CALL_PATTERN);
-  assert.match('fs.renameSync(a, b)', FORBIDDEN_CALL_PATTERN);
-  assert.match("fs.writeFile('x', data)", FORBIDDEN_CALL_PATTERN);
-  assert.match("require('node:child_process')", FORBIDDEN_MODULE_PATTERN);
-  assert.doesNotMatch('const stats = await fsp.lstat(file)', FORBIDDEN_CALL_PATTERN);
-  assert.doesNotMatch('const names = await fsp.readdir(dir)', FORBIDDEN_CALL_PATTERN);
+test('the guard catches file-changing code, however it is written', () => {
+  const sneaky = [
+    'await fsp.rm(target, { recursive: true })',
+    'fs.renameSync(a, b)',
+    "fs.writeFile('x', data)",
+    'await Promise.all(stale.map(fsp.unlink))',
+    "fsp['rm'](dir)",
+    'fsp.rm?.(dir)',
+    'const { rm: remove } = require("node:fs/promises")',
+    'const out = new fs.WriteStream(file)',
+    "const cp = require('node:child_process')",
+    "const { exec } = await import('child_process')",
+    "const glob = 'Exports/*.mp4'; await fsp.rm(dir); /** later doc */",
+    "const url = 'a//b'; fsp.unlink(file)",
+  ];
+  for (const code of sneaky) {
+    assert.notDeepEqual(findProblems(code), [], `should have been caught: ${code}`);
+  }
+});
+
+test('the guard allows read-only code and plain comments', () => {
+  const harmless = [
+    'const stats = await fsp.lstat(file)',
+    'const names = await fsp.readdir(dir)',
+    'const real = await fsp.realpath(root)',
+    '// we never rename(...) or rm(...) anything',
+    '   * It never opens, creates, changes, moves, renames or deletes anything.',
+    "throw new Error('Offloading is not built yet')",
+  ];
+  for (const code of harmless) {
+    assert.deepEqual(findProblems(code), [], `should be allowed: ${code}`);
+  }
 });

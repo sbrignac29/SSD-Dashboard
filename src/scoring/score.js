@@ -9,8 +9,10 @@
 //   Size: the project's size as a percentage of the largest project
 //
 //   Buckets: Ready (70+), Review (40–69.9), Keep (under 40)
-//   Safety overrides: never Ready if edited in the last 14 days (or if we
-//   can't tell when it was edited); pinned projects are always Keep.
+//   Safety overrides: pinned projects are always Keep. A project is never
+//   Ready (it's capped at Review) if it was edited in the last 14 days, or if
+//   we can't be sure when it was edited: no dated files, files dated in the
+//   future (a camera with a wrong clock), or folders that couldn't be read.
 //
 // The weights, day counts, thresholds and "done" statuses come from the
 // config. This file is pure math — it never touches the disk.
@@ -54,15 +56,34 @@ function bucketFor(score, { ready, review }) {
   return 'Keep';
 }
 
+// Reasons this project can't be trusted as Ready, each as a short sentence.
+function readyBlockers(project, daysSinceEdit, ageDays) {
+  const reasons = [];
+  if (daysSinceEdit === null) {
+    reasons.push('no file dates were found');
+  } else if (daysSinceEdit < ageDays.recent) {
+    reasons.push(`it was edited ${Math.floor(daysSinceEdit)} day(s) ago (within ${ageDays.recent})`);
+  }
+  if (project.futureDatedFiles > 0) {
+    reasons.push(`${project.futureDatedFiles} file(s) have future dates (camera clock?), so the real last edit is unknown`);
+  }
+  if (project.incomplete) {
+    reasons.push("some of its folders couldn't be read");
+  }
+  return reasons;
+}
+
 // Scores one project.
-//   project:  { sizeBytes, lastEditedMs, hasExport, notionStatus?, pinnedKeep? }
+//   project:  { sizeBytes, lastEditedMs, hasExport, notionStatus?, pinnedKeep?,
+//               futureDatedFiles?, incomplete? }
 //   settings: { weights, ageDays, buckets, doneStatuses } — i.e. the config
 //   context:  { now, largestBytes }
 // Returns { score, bucket, parts: { done, age, size }, daysSinceEdit, notes }.
 function scoreProject(project, settings, { now, largestBytes }) {
   const { weights, ageDays, buckets, doneStatuses } = settings;
 
-  // A date in the future (wrong clock) counts as "just now": the cautious answer.
+  // The scanner already ignores files dated more than a day ahead. Anything
+  // left that's slightly in the future counts as "just now" (age 0).
   const daysSinceEdit =
     project.lastEditedMs === null || project.lastEditedMs === undefined
       ? null
@@ -84,15 +105,12 @@ function scoreProject(project, settings, { now, largestBytes }) {
   if (project.pinnedKeep) {
     if (bucket !== 'Keep') notes.push(`Pinned as Keep (would be ${bucket} at ${score.toFixed(1)}).`);
     bucket = 'Keep';
-  } else if (bucket === 'Ready' && daysSinceEdit === null) {
-    bucket = 'Review';
-    notes.push('Would be Ready, but no file dates were found — capped at Review.');
-  } else if (bucket === 'Ready' && daysSinceEdit < ageDays.recent) {
-    bucket = 'Review';
-    notes.push(
-      `Would be Ready, but was edited ${Math.floor(daysSinceEdit)} day(s) ago ` +
-        `(within ${ageDays.recent}) — capped at Review.`,
-    );
+  } else if (bucket === 'Ready') {
+    const reasons = readyBlockers(project, daysSinceEdit, ageDays);
+    if (reasons.length > 0) {
+      bucket = 'Review';
+      notes.push(`Would be Ready, but ${reasons.join('; ')} — capped at Review.`);
+    }
   }
 
   return {
@@ -114,9 +132,17 @@ function scoreProjects(projects, settings, now) {
   }));
 }
 
-// Best offload candidates first: highest score, then biggest.
+const BUCKET_ORDER = { Ready: 0, Review: 1, Keep: 2 };
+
+// Best offload candidates first: Ready, then Review, then Keep; within a
+// bucket, highest score first, then biggest. (Sorting by bucket first keeps a
+// pinned project with a high score from showing up at the top.)
 function byScoreThenSize(a, b) {
-  return b.scoring.score - a.scoring.score || b.sizeBytes - a.sizeBytes;
+  return (
+    BUCKET_ORDER[a.scoring.bucket] - BUCKET_ORDER[b.scoring.bucket] ||
+    b.scoring.score - a.scoring.score ||
+    b.sizeBytes - a.sizeBytes
+  );
 }
 
 module.exports = { scoreProject, scoreProjects, byScoreThenSize, donePart, agePart, sizePart, bucketFor, DAY_MS };

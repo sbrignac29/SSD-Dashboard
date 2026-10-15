@@ -88,7 +88,12 @@ function friendlyRootError(error, root) {
 // Looks at the top level of the drive (and inside container folders) and
 // sorts every item into: a project to scan, a shared folder to scan, a loose
 // file, or something to skip.
-async function planScan(root, lists) {
+//
+// `prefix` is where `root` sits on the SSD, as folder names: [] for a normal
+// scan, or e.g. ["NCHS Football"] when you scan just that folder with --root.
+// Paths are always written from the top of the SSD, so the folder lists in
+// your config match the same way in both cases.
+async function planScan(root, lists, prefix) {
   const plan = { targets: [], looseFiles: [], skipped: [], hiddenCount: 0, warnings: [], seenKeys: new Set() };
 
   let entries;
@@ -98,13 +103,17 @@ async function planScan(root, lists) {
     throw new ScanError(friendlyRootError(error, root));
   }
   for (const entry of entries) {
-    await planEntry(plan, root, lists, entry, null);
+    await planEntry(plan, root, lists, entry, prefix, true);
   }
   return plan;
 }
 
-async function planEntry(plan, absDir, lists, entry, container) {
-  const relPath = container ? `${container}/${entry.name}` : entry.name;
+// parentSegments: folder names from the top of the SSD down to `absDir`.
+// atTop: true for items directly inside the scanned folder (the only level
+// where container folders get opened up).
+async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
+  const segments = [...parentSegments, entry.name];
+  const relPath = segments.join('/');
   const key = folderKey(relPath);
   plan.seenKeys.add(key);
 
@@ -131,7 +140,6 @@ async function planEntry(plan, absDir, lists, entry, container) {
   }
   if (stats.isFile()) {
     plan.looseFiles.push({
-      location: container || '',
       name: entry.name,
       relPath,
       sizeBytes: stats.size,
@@ -144,7 +152,7 @@ async function planEntry(plan, absDir, lists, entry, container) {
     return;
   }
 
-  if (!container && lists.containers.has(key)) {
+  if (atTop && lists.containers.has(key)) {
     let children;
     try {
       children = await statEntries(absPath);
@@ -153,18 +161,18 @@ async function planEntry(plan, absDir, lists, entry, container) {
       return;
     }
     for (const child of children) {
-      await planEntry(plan, absPath, lists, child, entry.name);
+      await planEntry(plan, absPath, lists, child, segments, false);
     }
     return;
   }
 
   plan.targets.push({
-    name: container ? `${container} / ${entry.name}` : entry.name,
+    name: segments.join(' / '),
     folderName: entry.name,
+    segments,
     relPath,
     absPath,
     kind: lists.shared.has(key) ? 'shared' : 'project',
-    container,
   });
 }
 
@@ -179,7 +187,6 @@ function newFacts(target) {
     name: target.name,
     relPath: target.relPath,
     kind: target.kind,
-    container: target.container,
     parsedName: parseProjectName(target.folderName),
     sizeBytes: 0, // what Finder calls the size: the sum of every file's length
     diskBytes: 0, // space actually taken on the drive (rounded up per file)
@@ -192,9 +199,12 @@ function newFacts(target) {
     lastProjectSaveMs: null, // newest modified time of a project file (.drp, .prproj, ...)
     lastProjectSaveFile: null,
     hasExport: false,
+    exportExampleFile: null, // the first file that made hasExport true, so you can check it in Finder
     futureDatedFiles: 0,
     futureDatedExample: null,
     skippedLinks: 0,
+    incomplete: false, // true if some folder or file inside couldn't be read
+    pinnedKeep: false,
     warnings: [],
     warningsDropped: 0,
   };
@@ -219,7 +229,10 @@ function recordFile(facts, name, dir, stats, classifier, now) {
   facts.diskBytes += diskUsage(stats);
   facts.bytesByType[category] += stats.size;
   facts.filesByType[category] += 1;
-  if (category === 'export') facts.hasExport = true;
+  if (category === 'export' && !facts.hasExport) {
+    facts.hasExport = true;
+    facts.exportExampleFile = relPath;
+  }
 
   // Dates: only real files count. Hidden housekeeping files get rewritten
   // just by browsing in Finder, which would make old projects look fresh.
@@ -243,13 +256,22 @@ function recordFile(facts, name, dir, stats, classifier, now) {
   }
 }
 
-async function scanFolder(target, { classifier, now, onProgress, progress }) {
+// If a folder suddenly can't be read, check whether the whole drive went away
+// (unplugged, cable bumped, Mac went to sleep). A half-finished scan would
+// show projects as 0 GB, so it's better to stop with a clear message.
+async function assertDriveStillThere(root) {
+  try {
+    await fsp.stat(root);
+  } catch {
+    throw new ScanError('The SSD disconnected during the scan, so the results would be wrong. Plug it back in and run the scan again.');
+  }
+}
+
+async function scanFolder(target, { classifier, now, onProgress, progress, root }) {
   const facts = newFacts(target);
   // The "stack" is a to-do list of folders still to look inside. We take one
   // off, list it, and add any subfolders we find back onto the list.
-  const stack = [
-    { absPath: target.absPath, folders: [], context: classifier.rootContext(target.relPath.split('/')) },
-  ];
+  const stack = [{ absPath: target.absPath, folders: [], context: classifier.rootContext(target.segments) }];
 
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -257,6 +279,8 @@ async function scanFolder(target, { classifier, now, onProgress, progress }) {
     try {
       entries = await statEntries(dir.absPath);
     } catch (error) {
+      await assertDriveStillThere(root);
+      facts.incomplete = true;
       const where = dir.folders.length > 0 ? dir.folders.join('/') : '(the project folder itself)';
       addWarning(facts, `Couldn't open folder "${where}" (${error.code || error.message}).`);
       continue;
@@ -264,8 +288,11 @@ async function scanFolder(target, { classifier, now, onProgress, progress }) {
 
     for (const entry of entries) {
       if (entry.error) {
-        // ENOENT = the file disappeared between listing and looking; ignore it.
+        // ENOENT = the file disappeared between listing and looking (an app
+        // deleted a temp file); ignore it. Anything else means we missed a file.
         if (entry.error.code !== 'ENOENT') {
+          await assertDriveStillThere(root);
+          facts.incomplete = true;
           addWarning(facts, `Couldn't look at "${[...dir.folders, entry.name].join('/')}" (${entry.error.code}).`);
         }
         continue;
@@ -315,12 +342,38 @@ function unmatchedConfigWarnings(folders, seenKeys) {
   return warnings;
 }
 
-// Scans the drive at config.ssdPath. Returns plain data (no classes), so it
-// can be printed now and saved to the database in Phase 2.
+// Where `root` sits inside the SSD, as folder names: [] if it IS the SSD,
+// ["NCHS Football"] for /Volumes/BRIGSMEDIA/NCHS Football, or null if it's
+// somewhere else entirely. realpath gives both paths in their true on-disk
+// spelling (macOS ignores upper/lower case), so they compare reliably.
+async function locateInsideSsd(root, ssdPath) {
+  let realRoot;
+  let realSsd;
+  try {
+    [realRoot, realSsd] = await Promise.all([fsp.realpath(root), fsp.realpath(ssdPath)]);
+  } catch {
+    return root === path.resolve(ssdPath) ? [] : null;
+  }
+  const relative = path.relative(realSsd, realRoot);
+  if (relative === '') return [];
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep);
+}
+
+// True if this path, or any folder above it, is pinned. Pinning a container
+// like "NCHS Football" keeps every shoot inside it.
+function isPinned(segments, pinnedKeys) {
+  return segments.some((_, i) => pinnedKeys.has(folderKey(segments.slice(0, i + 1).join('/'))));
+}
+
+// Scans the SSD and returns plain data (no classes), so it can be printed now
+// and saved to the database in Phase 2.
+//   root       – folder to scan; defaults to config.ssdPath. Can be a folder
+//                inside the SSD (npm run scan -- --root ...) or anywhere else.
 //   now        – the time to measure "future-dated" against (tests pass a fixed time)
 //   onProgress – called after each folder with { name, filesScanned }
-async function scanDrive(config, { now = Date.now(), onProgress = () => {} } = {}) {
-  const root = path.resolve(config.ssdPath);
+async function scanDrive(config, { root = config.ssdPath, now = Date.now(), onProgress = () => {} } = {}) {
+  root = path.resolve(root);
 
   let rootStats;
   try {
@@ -330,6 +383,9 @@ async function scanDrive(config, { now = Date.now(), onProgress = () => {} } = {
   }
   if (!rootStats.isDirectory()) throw new ScanError(`"${root}" is a file, not a folder.`);
 
+  const prefix = await locateInsideSsd(root, config.ssdPath);
+  const isWholeSsd = prefix !== null && prefix.length === 0;
+
   const classifier = createClassifier(config.fileTypes);
   const lists = {
     ignore: keySet(config.folders.ignore),
@@ -338,26 +394,32 @@ async function scanDrive(config, { now = Date.now(), onProgress = () => {} } = {
     keepPinned: keySet(config.folders.keepPinned),
   };
 
-  const plan = await planScan(root, lists);
+  const plan = await planScan(root, lists, prefix ?? []);
   const progress = { filesScanned: 0 };
   const projects = [];
   const shared = [];
 
   for (const target of plan.targets) {
-    const facts = await scanFolder(target, { classifier, now, onProgress, progress });
-    facts.pinnedKeep = lists.keepPinned.has(folderKey(target.relPath));
+    const facts = await scanFolder(target, { classifier, now, onProgress, progress, root });
+    facts.pinnedKeep = isPinned(target.segments, lists.keepPinned);
     (target.kind === 'shared' ? shared : projects).push(facts);
   }
 
+  // "This name matches nothing" warnings only make sense when we've seen the
+  // whole SSD; a --root scan only sees part of it.
+  const warnings = isWholeSsd ? [...plan.warnings, ...unmatchedConfigWarnings(config.folders, plan.seenKeys)] : plan.warnings;
+
   return {
     root,
+    // 'ssd' = the whole SSD; 'inside-ssd' = one folder on it; 'elsewhere' = not on the SSD
+    scope: isWholeSsd ? 'ssd' : prefix ? 'inside-ssd' : 'elsewhere',
     scannedAt: now,
     projects,
     shared,
     looseFiles: plan.looseFiles,
     skipped: plan.skipped,
     hiddenCount: plan.hiddenCount,
-    warnings: [...plan.warnings, ...unmatchedConfigWarnings(config.folders, plan.seenKeys)],
+    warnings,
     filesScanned: progress.filesScanned,
   };
 }

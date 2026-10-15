@@ -38,10 +38,12 @@ function readJson(filePath) {
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new ConfigError(
-      `${fileName} isn't valid JSON: ${err.message}\n` +
-        'Tip: look for a missing comma between items, or an extra comma after the last item in a list.',
-    );
+    // TextEdit's "smart quotes" turn " into “ ”, which JSON doesn't allow.
+    const tip = /[“”‘’]/.test(text)
+      ? 'Tip: the file contains curly quotes (“ ”). JSON needs straight quotes ("). In TextEdit, turn off ' +
+        'Edit → Substitutions → Smart Quotes and retype them, or use a code editor like VS Code.'
+      : 'Tip: look for a missing comma between items, or an extra comma after the last item in a list.';
+    throw new ConfigError(`${fileName} isn't valid JSON: ${err.message}\n${tip}`);
   }
 }
 

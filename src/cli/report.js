@@ -36,6 +36,19 @@ function shortenText(text, width) {
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
 }
 
+// Shortens a path-like name but keeps its LAST part whole, because that's the
+// part that tells rows apart:
+//   "Next Elite Soccer Training / Session 2" -> "Next Elite Soc… / Session 2"
+function shortenPath(text, width, separator = ' / ') {
+  if (text.length <= width) return text;
+  const cut = text.lastIndexOf(separator);
+  if (cut === -1) return shortenText(text, width);
+  const tail = text.slice(cut + separator.length);
+  const room = width - tail.length - separator.length;
+  if (room < 4) return shortenText(text, width);
+  return `${shortenText(text.slice(0, cut), room)}${separator}${tail}`;
+}
+
 // Terminal colors, using "ANSI escape codes" — special characters that most
 // terminals understand as "switch to green", etc. Turned off when the output
 // goes to a file or another program.
@@ -45,9 +58,11 @@ function makePainter(enabled) {
 }
 
 // Lines up rows of text into columns.
-//   columns: [{ header, align: 'left'|'right', flex?, paint? }]
+//   columns: [{ header, align: 'left'|'right', flex?, shorten?, paint? }]
 //   rows:    arrays of strings, one per column
-// The one `flex` column (the project name) shrinks to fit the terminal width.
+// The one `flex` column (the project name) shrinks to fit the terminal width,
+// using the column's `shorten` function if it has one. Pass width: Infinity
+// to never shorten (e.g. when saving the report to a file).
 function renderTable(columns, rows, { width = 100, indent = '  ', gap = '  ' } = {}) {
   const natural = columns.map((col, i) => Math.max(col.header.length, ...rows.map((row) => row[i].length)));
   const flexIndex = columns.findIndex((col) => col.flex);
@@ -59,7 +74,7 @@ function renderTable(columns, rows, { width = 100, indent = '  ', gap = '  ' } =
   const last = columns.length - 1;
   const formatCell = (text, i, isHeader) => {
     const col = columns[i];
-    const fitted = shortenText(text, natural[i]);
+    const fitted = (col.shorten || shortenText)(text, natural[i]);
     let cell = col.align === 'right' ? fitted.padStart(natural[i]) : fitted;
     if (col.align !== 'right' && i !== last) cell = cell.padEnd(natural[i]);
     return !isHeader && col.paint ? col.paint(cell, text) : cell;
@@ -95,7 +110,20 @@ function headerSection({ scan, configSource, elapsedMs }, paint) {
       `${plural(scan.filesScanned + scan.looseFiles.length, 'file')} · ${formatGB(projectBytes + sharedBytes + looseBytes)} GB · ` +
       `${(elapsedMs / 1000).toFixed(1)} s`,
     `  Finished  ${formatDate(scan.scannedAt + elapsedMs, { withTime: true })}`,
+    ...scopeNote(scan.scope).map((line) => paint.dim(line)),
   ];
+}
+
+function scopeNote(scope) {
+  if (scope === 'inside-ssd') {
+    return ['  Note      This scan covers one folder (--root). Config folder lists still match by their path on the SSD;',
+            '            "name not found" warnings are off because the rest of the SSD wasn\'t looked at.'];
+  }
+  if (scope === 'elsewhere') {
+    return ['  Note      This folder isn\'t on your SSD ("ssdPath" in config), so config folder lists are matched',
+            '            from this folder down, and "name not found" warnings are off.'];
+  }
+  return [];
 }
 
 function projectTableSection({ projects, scored, width }, paint) {
@@ -107,7 +135,7 @@ function projectTableSection({ projects, scored, width }, paint) {
 
   const columns = [
     { header: '#', align: 'right' },
-    { header: 'Project', align: 'left', flex: true },
+    { header: 'Project', align: 'left', flex: true, shorten: shortenPath },
     { header: 'Size (GB)', align: 'right' },
     { header: 'Last edited', align: 'left' },
     { header: 'Export', align: 'left' },
@@ -157,7 +185,7 @@ function sharedSection({ scan, width }, paint) {
     paint.bold('Shared folders — measured but never ranked (folders.shared in config)'),
     ...renderTable(
       [
-        { header: 'Folder', align: 'left', flex: true },
+        { header: 'Folder', align: 'left', flex: true, shorten: shortenPath },
         { header: 'Size (GB)', align: 'right' },
         { header: 'Last edited', align: 'left' },
       ],
@@ -180,7 +208,7 @@ function looseFilesSection({ scan, width }, paint) {
     ),
     ...renderTable(
       [
-        { header: 'File', align: 'left', flex: true },
+        { header: 'File', align: 'left', flex: true, shorten: (text, width) => shortenPath(text, width, '/') },
         { header: 'Size (GB)', align: 'right' },
         { header: 'Modified', align: 'left' },
       ],
@@ -210,11 +238,15 @@ function warningsSection({ scan }, paint) {
 function scoreExplanation(p, weights) {
   const { parts, bucket, score, daysSinceEdit } = p.scoring;
   const doneWhy = parts.done === 100 ? 'Notion says done' : parts.done === 70 ? 'has an export' : 'no export found';
-  const ageWhy = daysSinceEdit === null ? 'no dated files' : `${Math.floor(daysSinceEdit)} days since last edit`;
+  const ageWhy = daysSinceEdit === null ? 'no dated files' : `${daysSinceEdit.toFixed(1)} days since last edit`;
+  // The parts are shown rounded to 0.1, so adding them up by hand can land
+  // 0.1 away from the real score. Say so instead of looking like a mistake.
+  const handSum = weights.done * parts.done + weights.age * parts.age + weights.size * parts.size;
+  const roundingNote = Math.round(handSum * 10) / 10 === score ? '' : ' (parts are rounded for display)';
   return (
     `${weights.done} × ${parts.done} done (${doneWhy}) + ` +
     `${weights.age} × ${parts.age} age (${ageWhy}) + ` +
-    `${weights.size} × ${parts.size} size = ${score.toFixed(1)} → ${bucket}`
+    `${weights.size} × ${parts.size} size = ${score.toFixed(1)}${roundingNote} → ${bucket}`
   );
 }
 
@@ -235,11 +267,13 @@ function detailsSection({ projects, scored, weights }, paint) {
       `     By type (GB)  ${byType}`,
       `     Last edited   ${formatDate(p.lastEditedMs, { withTime: true })}   ${p.lastEditedFile ?? '(no dated files)'}`,
       `     Project file  ${formatDate(p.lastProjectSaveMs, { withTime: true })}   ${p.lastProjectSaveFile ?? '(none found in this folder)'}`,
+      `     Export        ${p.hasExport ? `yes — e.g. ${p.exportExampleFile}` : 'no export found in this folder'}`,
       `     From name     ${nameParts}`,
     );
     if (scored) lines.push(`     Score         ${scoreExplanation(p, weights)}`);
     if (p.pinnedKeep) lines.push('     Pinned        yes — always Keep (folders.keepPinned)');
     if (p.skippedLinks > 0) lines.push(`     Not followed  ${plural(p.skippedLinks, 'shortcut')} (symlinks)`);
+    if (p.incomplete) lines.push("     Incomplete    some folders or files couldn't be read — see Warnings");
   });
   return lines;
 }
@@ -274,4 +308,4 @@ function renderReport({ scan, projects, scored = false, weights, configSource, e
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { renderReport, renderTable, formatGB, formatDate, shortenText };
+module.exports = { renderReport, renderTable, formatGB, formatDate, shortenText, shortenPath };

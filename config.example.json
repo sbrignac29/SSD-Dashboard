@@ -43,11 +43,11 @@
       ".nef", ".arw", ".raf", ".orf", ".rw2", ".pef", ".srw", ".gpr", ".dpx", ".exr"
     ],
     "audioExtensions": [".wav", ".bwf", ".mp3", ".aac", ".m4a", ".aif", ".aiff", ".flac", ".caf"],
-    "proxyExtensions": [".lrv"],
+    "proxyExtensions": [".lrv", ".lrf"],
     "cacheExtensions": [".pek", ".cfa", ".mcdb", ".pkf"],
     "cacheFolderWords": ["cache", "caches", "peak files", "render files", "analysis files", "video previews", "audio previews"],
     "proxyFolderWords": ["proxy", "proxies", "optimized media"],
-    "proxyFileWords": ["proxy"],
+    "proxyFileWords": ["proxy", "lrv"],
     "exportFolderWords": ["export", "exports", "exported", "deliverable", "deliverables", "render", "renders", "output", "outputs"],
     "exportFileWords": ["final", "export", "exported", "master", "deliverable"]
   }

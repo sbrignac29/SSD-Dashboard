@@ -16,11 +16,11 @@ ranks them so you know what to move to archive storage first.
 ## 1. What you need
 
 - A Mac with your SSD plugged in.
-- **Node.js 20 or newer.** Check in Terminal:
+- **Node.js 22 or newer** (20 still works). Check in Terminal:
   ```
   node -v
   ```
-  If it prints `v20.x` or higher, you're set. If it says "command not found" or
+  If it prints `v22.x` or higher, you're set. If it says "command not found" or
   a lower number, install the **LTS** version from <https://nodejs.org>.
 
 ## 2. Get the code
@@ -49,9 +49,11 @@ cp config.example.json config.json
 - `cp` copies the example settings into **your own** `config.json`. Git ignores
   that file, so your paths (and later, your Notion key) never get uploaded.
 
-Open `config.json` in any text editor and check `ssdPath` is your drive
-(`/Volumes/BRIGSMEDIA`). If you skip this step, the app uses the example
-settings as-is and tells you so.
+Open `config.json` in a code editor (like VS Code) and check `ssdPath` is your
+drive (`/Volumes/BRIGSMEDIA`). If you use TextEdit, first turn off
+**Edit → Substitutions → Smart Quotes** — JSON needs straight `"` quotes, not
+curly `“ ”` ones. If you skip this step, the app uses the example settings
+as-is and tells you so.
 
 ## 4. Run a scan
 
@@ -65,7 +67,7 @@ Other ways to run it:
 |---|---|
 | `npm run scan` | Scan and print the ranked table |
 | `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, and the score math |
-| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan a different folder instead (its subfolders are treated as projects). Handy for trying a small folder first |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder (its subfolders are treated as projects). Handy for trying a small folder first. Your config lists still apply |
 | `npm run scan -- --help` | List the options |
 
 (The `--` tells npm "everything after this goes to the scan command, not to npm".)
@@ -75,20 +77,23 @@ volume. Click **Allow**.
 
 ## 5. Reading the report
 
-**Projects table** — best offload candidates first:
+**Projects table** — best offload candidates first (all Ready projects, then
+Review, then Keep; highest score first within each):
 
 | Column | Meaning |
 |---|---|
 | Size (GB) | Total size of the project folder, in the same units Finder uses |
 | Last edited | Date of the newest file in the project (hidden system files like `.DS_Store` don't count — Finder rewrites those just from browsing) |
-| Export | `yes` if there are files in an Exports / Deliverables / Renders folder inside the project, or a video named with "final" or "master" |
+| Export | `yes` if the project folder has files inside a folder named like Exports, Deliverables, Renders or Output, or a video named with "final", "master" or "export" (a number or version on the end counts too: `FINALv2`). The exact word lists are `fileTypes.exportFolderWords` / `exportFileWords` in the config. `scan:details` names the file that counted |
 | Score | 0–100, higher = better candidate to offload (see below) |
 | Bucket | **Ready** (70+), **Review** (40–69.9), **Keep** (under 40) |
 
 Below the table:
 - **Buckets** — how many projects and GB are in each bucket.
-- **Safety overrides** — projects whose bucket was lowered: edited in the last
-  14 days (never Ready) or pinned as Keep.
+- **Safety overrides** — projects whose bucket was lowered. Pinned projects are
+  always Keep. A project is never Ready if it was edited in the last 14 days,
+  or if the scanner can't be sure when it was last edited (files with future
+  dates from a camera with a wrong clock, or folders it couldn't read).
 - **Shared folders** — folders used by many projects (like `Resolve Project
   Library`). Measured, never ranked. Offloading the Resolve library would break
   every Resolve project.
@@ -129,7 +134,7 @@ project pinned in `folders.keepPinned` is always Keep.
 | `folders.ignore` | Top-level folders to skip completely |
 | `folders.shared` | Folders used across projects: measured, never ranked |
 | `folders.containers` | Folders that hold many shoots (like `NCHS Football`). Each subfolder becomes its own project |
-| `folders.keepPinned` | Projects that must always stay (bucket = Keep) |
+| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it |
 | `fileTypes.*` | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
 
 Folder names are matched ignoring upper/lower case. To name a subfolder of a
@@ -177,13 +182,43 @@ find "/Volumes/BRIGSMEDIA/Soccer 8-24" -type f ! -name '.*' -exec stat -f '%Sm  
 
 It lists the 3 most recently modified files, newest last.
 
-**Export.** Open the project and look for an Exports / Deliverables / Renders
-folder with files in it, or a video with "final" or "master" in its name.
+**Export.** The details line `Export  yes — e.g. Exports/Week 1 Highlights.mp4`
+names the file that counted. Find it in Finder. `no` means nothing inside the
+project folder looked like a finished export (see section 9 for why exports
+saved elsewhere don't count).
 
 If something looks wrong, note the project name and what Finder says, and we'll
 adjust the rules.
 
-## 9. Run the tests
+## 9. Folder naming and where to save things (optional, but it helps)
+
+You **don't need to rename anything** for the app to work, and renaming a
+folder never changes its score (scores come from file dates, sizes and
+exports, not names). What *does* change the ranking is **where files live**:
+
+1. **Save each project's finished exports inside the project folder**, in a
+   subfolder called `Exports` (or `Deliverables`):
+   `Soccer 8-24/Exports/Soccer 8-24 FINAL.mp4`.
+   Exports saved in the shared `FINAL EXPORTS` / `FINAL FINAL RENDERS` folders,
+   or loose at the top of the drive, can't be linked back to their project, so
+   that project shows `Export: no` and scores up to 31.5 points too low.
+2. **Save each project's Premiere project (`.prproj`) inside its folder.**
+   Project files kept in the shared `Project files` folder don't count as
+   editing that project, so a project you're revising could look old.
+3. **Container shoots:** put each game's exports inside that game's folder
+   (`NCHS Football/Week 3 vs X/Exports/`), not in one shared
+   `NCHS Football/Exports` folder.
+
+For **new** folders, a date-first name helps you (and later, Notion matching):
+`2026-08-24 Next Elite - Soccer Training`. It sorts by date in Finder and
+includes the year. The app already understands it.
+
+⚠️ Don't rename folders of projects that are open in Resolve or Premiere — the
+media links break. And if you rename a folder that's listed in `config.json`
+(shared, containers, pinned...), update the name there too; the scan warns you
+about names it can't find.
+
+## 10. Run the tests
 
 ```
 npm test
@@ -193,7 +228,7 @@ Tests are small programs that run the app's code with known inputs and check
 the answers — including the scoring formula, the file sorting rules, a scan of
 a fake drive, and the safety checks. All should say `pass`.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 - **"Can't find /Volumes/BRIGSMEDIA. Is the SSD plugged in?"** — plug it in, or
   run `ls /Volumes` and fix `ssdPath` in `config.json`.
@@ -202,7 +237,10 @@ a fake drive, and the safety checks. All should say `pass`.
   **Removable Volumes**. Then run the scan again.
 - **"This app is stored on the drive it scans"** — move the app folder off the
   SSD (e.g. to `~/Code`).
-- **"config.json isn't valid JSON"** — look for a missing or extra comma.
+- **"config.json isn't valid JSON"** — look for a missing or extra comma, or
+  curly quotes (`“ ”`) that TextEdit swapped in for straight ones (`"`).
+- **"The SSD disconnected during the scan"** — the drive went away mid-scan
+  (cable, dock, sleep). Plug it back in and run the scan again.
 - **Odd syntax errors when running anything** — check `node -v` is 20 or newer.
 
 ## Known limitations
@@ -213,6 +251,9 @@ a fake drive, and the safety checks. All should say `pass`.
   don't change, so it can look older than it is. Check before offloading
   anything Resolve-based. (A later phase can read the library's per-project
   save dates.)
+- **Exports and project files saved outside the project folder** (in
+  `FINAL EXPORTS`, `FINAL FINAL RENDERS`, `Project files`, or loose at the top
+  of the drive) aren't linked to their project. See section 9.
 - **Copied footage keeps its original dates.** Finder keeps a file's modified
   date when copying, so footage copied from an old card looks old until you
   start editing (your project file and renders will then be newer).

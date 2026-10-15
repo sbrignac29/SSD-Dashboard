@@ -40,6 +40,8 @@ test('proxy folders, proxy file names and .lrv files are proxies', () => {
   assert.equal(classify('C0001.mov', ['OptimizedMedia']), 'proxy');
   assert.equal(classify('C0001_Proxy.mov', ['Footage']), 'proxy');
   assert.equal(classify('GL010001.LRV', ['DCIM', '100GOPRO']), 'proxy');
+  assert.equal(classify('DJI_0001.LRF', ['DCIM', 'DJI_001']), 'proxy');
+  assert.equal(classify('LRV_20260101_120000_11_001.insv', []), 'proxy');
 });
 
 test('a project NAME can mark proxies or cache, e.g. "NCHS Football Working Proxies"', () => {
@@ -58,6 +60,13 @@ test('video files named like finished exports are exports', () => {
   assert.equal(classify('Sunburned Final Cut.mov', []), 'export');
   assert.equal(classify('Meet the Rowdies FINAL.mov', []), 'export');
   assert.equal(classify('Season_Master.mp4', []), 'export');
+});
+
+test('a version or number on the end still counts: FINALv2, Final2, Exports2025', () => {
+  assert.equal(classify('Senior Night FINALv2.mp4', []), 'export');
+  assert.equal(classify('Promo Final2.mp4', []), 'export');
+  assert.equal(classify('v1.mp4', ['Exports2025']), 'export');
+  assert.equal(classify('C0001.mov', ['Proxies1080']), 'proxy');
 });
 
 test('a project NAME never makes exports: "Soccer Finals Temp" footage stays raw', () => {

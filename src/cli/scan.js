@@ -81,15 +81,16 @@ async function main(argv) {
   }
 
   const { config, source } = loadConfig();
-  if (options.root) config.ssdPath = resolveUserPath(options.root);
+  const root = options.root ? resolveUserPath(options.root) : config.ssdPath;
   assertSafeLocations(config);
+  assertSafeLocations({ ...config, ssdPath: root });
 
-  console.error(`Scanning ${config.ssdPath} (read-only)…`);
+  console.error(`Scanning ${root} (read-only)…`);
   const startedAt = Date.now();
   const progressLine = createProgressLine(process.stderr);
   let scan;
   try {
-    scan = await scanDrive(config, { now: startedAt, onProgress: progressLine.update });
+    scan = await scanDrive(config, { root, now: startedAt, onProgress: progressLine.update });
   } finally {
     progressLine.clear();
   }
@@ -108,7 +109,8 @@ async function main(argv) {
       elapsedMs: Date.now() - startedAt,
       details: options.details,
       color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR,
-      width: process.stdout.columns || 100,
+      // In a terminal, fit the window. Saved to a file, never cut names short.
+      width: process.stdout.isTTY ? process.stdout.columns || 100 : Infinity,
     }),
   );
 }

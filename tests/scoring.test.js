@@ -130,6 +130,10 @@ test('old but unfinished, small → Review or Keep, never Ready', () => {
 test('the score is rounded to 1 decimal before picking the bucket', () => {
   // size 99.8% → 0.45 × 70 + 0.35 × 100 + 0.20 × 99.8 = 86.46 → 86.5
   assert.equal(score({ hasExport: true, sizeBytes: 99.8 * GB }).score, 86.5);
+  // size 17.3% → 31.5 + 35 + 3.46 = 69.96 → shown as 70.0, so it must be Ready
+  const edge = score({ hasExport: true, sizeBytes: 17.3 * GB });
+  assert.equal(edge.score, 70);
+  assert.equal(edge.bucket, 'Ready');
 });
 
 // --- Safety overrides ------------------------------------------------------
@@ -167,6 +171,26 @@ test('no dated files: age counts as 0 and it can never be Ready', () => {
   assert.equal(result.bucket, 'Review');
 });
 
+test('files with future dates (wrong camera clock) block Ready', () => {
+  // 31.5 + 35 + 20 = 86.5 would be Ready
+  const result = score({ hasExport: true, futureDatedFiles: 2 });
+  assert.equal(result.score, 86.5);
+  assert.equal(result.bucket, 'Review');
+  assert.match(result.notes[0], /future dates/);
+});
+
+test("folders that couldn't be read block Ready", () => {
+  const result = score({ hasExport: true, incomplete: true });
+  assert.equal(result.bucket, 'Review');
+  assert.match(result.notes[0], /couldn't be read/);
+});
+
+test('several reasons are all listed in one note', () => {
+  const result = score({ hasExport: true, incomplete: true, futureDatedFiles: 1 });
+  assert.equal(result.notes.length, 1);
+  assert.match(result.notes[0], /future dates.*couldn't be read/);
+});
+
 test('a last-edited date in the future counts as edited just now', () => {
   const result = score({ lastEditedMs: NOW + 30 * DAY_MS });
   assert.equal(result.daysSinceEdit, 0);
@@ -195,11 +219,13 @@ test('scoreProjects handles an empty drive', () => {
   assert.deepEqual(scoreProjects([], settings, NOW), []);
 });
 
-test('sorting puts the highest score first, then the biggest', () => {
+test('sorting: Ready, then Review, then Keep; highest score then biggest within each', () => {
   const list = [
-    { name: 'a', sizeBytes: 1, scoring: { score: 50 } },
-    { name: 'b', sizeBytes: 9, scoring: { score: 80 } },
-    { name: 'c', sizeBytes: 5, scoring: { score: 50 } },
+    { name: 'a', sizeBytes: 1, scoring: { score: 50, bucket: 'Review' } },
+    { name: 'b', sizeBytes: 9, scoring: { score: 80, bucket: 'Ready' } },
+    { name: 'c', sizeBytes: 5, scoring: { score: 50, bucket: 'Review' } },
+    { name: 'pinned', sizeBytes: 9, scoring: { score: 95, bucket: 'Keep' } },
+    { name: 'recent', sizeBytes: 9, scoring: { score: 75, bucket: 'Review' } },
   ];
-  assert.deepEqual(list.sort(byScoreThenSize).map((p) => p.name), ['b', 'c', 'a']);
+  assert.deepEqual(list.sort(byScoreThenSize).map((p) => p.name), ['b', 'recent', 'c', 'a', 'pinned']);
 });
