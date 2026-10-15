@@ -95,6 +95,14 @@ function matchesSelfOrAncestor(segments, keys) {
   return segments.some((_, i) => keys.has(folderKey(segments.slice(0, i + 1).join('/'))));
 }
 
+// True if config.json pins this project (folders.keepPinned), using the same
+// rules as a scan: any upper/lower case, and a pinned container covers every
+// project inside it. The database uses this when it re-scores without a scan.
+//   relPath – the project's path from the top of the SSD, e.g. "NCHS Football/Week 1"
+function isPinnedByConfig(relPath, keepPinned) {
+  return matchesSelfOrAncestor(String(relPath).split('/'), keySet(keepPinned));
+}
+
 // Looks at the top level of the drive (and inside container folders) and
 // sorts every item into: a project to scan, a shared folder to scan, a loose
 // file, or something to skip.
@@ -104,7 +112,7 @@ function matchesSelfOrAncestor(segments, keys) {
 // Paths are always written from the top of the SSD, so the folder lists in
 // your config match the same way in both cases.
 async function planScan(root, lists, prefix) {
-  const plan = { targets: [], looseFiles: [], skipped: [], hiddenCount: 0, warnings: [], seenKeys: new Set() };
+  const plan = { targets: [], looseFiles: [], skipped: [], hiddenCount: 0, warnings: [], unreadable: [], seenKeys: new Set() };
 
   let entries;
   try {
@@ -134,6 +142,7 @@ async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
   }
   if (entry.error) {
     plan.warnings.push(`Couldn't look at "${relPath}" (${entry.error.code || entry.error.message}).`);
+    plan.unreadable.push(relPath);
     return;
   }
   if (matchesSelfOrAncestor(segments, lists.ignore)) {
@@ -168,6 +177,7 @@ async function planEntry(plan, absDir, lists, entry, parentSegments, atTop) {
       children = await statEntries(absPath);
     } catch (error) {
       plan.warnings.push(`Couldn't open container folder "${relPath}" (${error.code || error.message}).`);
+      plan.unreadable.push(relPath);
       return;
     }
     for (const child of children) {
@@ -418,8 +428,8 @@ async function locateOnDrives(root, config) {
 }
 
 
-// Scans the SSD and returns plain data (no classes), so it can be printed now
-// and saved to the database in Phase 2.
+// Scans a drive and returns plain data (no classes), so it can be printed and
+// saved to the database (src/db.js).
 //   root       – folder to scan; defaults to the working SSD (drives.working).
 //                Can be a folder inside any of the drives
 //                (npm run scan -- --root ...) or anywhere else.
@@ -484,8 +494,11 @@ async function scanDrive(config, { root = config.drives.working, now = Date.now(
     skipped: plan.skipped,
     hiddenCount: plan.hiddenCount,
     warnings,
+    // Folders (paths from the top of the drive) that couldn't be opened or
+    // looked at, so nothing is known about what's inside them this time.
+    unreadable: plan.unreadable,
     filesScanned: progress.filesScanned,
   };
 }
 
-module.exports = { scanDrive, folderKey, ScanError };
+module.exports = { scanDrive, folderKey, isPinnedByConfig, ScanError };

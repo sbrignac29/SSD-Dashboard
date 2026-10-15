@@ -161,6 +161,33 @@ test('pinned as Keep always means Keep, and says what it would have been', () =>
   assert.match(result.notes[0], /Pinned as Keep \(would be Ready\)/);
 });
 
+test('a pinned project is never Ready, whatever its exports, status, age, size or dates', () => {
+  let readyWhenUnpinned = 0;
+  for (const hasFinalExport of [false, true]) {
+    for (const notionStatus of [undefined, 'Editing', 'Complete']) {
+      for (const days of [null, 0, 13, 14, 60, 120, 1000]) {
+        for (const sizeBytes of [0, 50 * GB, 100 * GB]) {
+          for (const uncertain of [{}, { incomplete: true }, { futureDatedFiles: 2 }]) {
+            const project = {
+              hasExport: hasFinalExport,
+              hasFinalExport,
+              notionStatus,
+              sizeBytes,
+              lastEditedMs: days === null ? null : daysAgo(days),
+              ...uncertain,
+            };
+            const label = JSON.stringify({ hasFinalExport, notionStatus, days, sizeBytes, ...uncertain });
+            assert.equal(score({ ...project, pinnedKeep: true }).bucket, 'Keep', label);
+            if (score(project).bucket === 'Ready') readyWhenUnpinned += 1;
+          }
+        }
+      }
+    }
+  }
+  // Without the pin, some of these really are Ready, so the pin is what keeps them out.
+  assert.ok(readyWhenUnpinned > 0);
+});
+
 test("no dated files: a finished project still isn't Ready", () => {
   const result = score({ notionStatus: 'Complete', lastEditedMs: null });
   assert.equal(result.daysSinceEdit, null);

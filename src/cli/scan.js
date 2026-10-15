@@ -1,34 +1,41 @@
 #!/usr/bin/env node
 'use strict';
 
-// The `npm run scan` command: loads settings, scans the SSD (read-only),
-// scores each project, and prints them best offload candidates first.
+// The `npm run scan` command: loads settings, scans the working SSD
+// (read-only), saves the results to the database (data/dashboard.db), scores
+// each project, and prints them best candidates first, with drive space and
+// the move plan.
 //
-//   npm run scan                         scan the SSD from config
+//   npm run scan                         scan the SSD from config, and save
 //   npm run scan:details                 same, with per-project details
-//   npm run scan -- --root "/a/folder"   scan a different folder instead
+//   npm run scan -- --root "/a/folder"   scan a different folder instead (not saved)
 //
 // (With npm, options for the script go after `--`.)
 
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
 const { loadConfig, assertSafeLocations, assertAppNotInside, ConfigError } = require('../config');
-const { scanDrive, ScanError } = require('../scanner/scan');
+const { scanDrive, folderKey, ScanError } = require('../scanner/scan');
 const { allDriveSpace } = require('../scanner/space');
 const { scoreProjects, byOffloadOrder } = require('../scoring/score');
 const { planMoves } = require('../scoring/plan');
-const { renderReport } = require('./report');
+const { openDatabase, pinnedPathKeys, displayPath, describeDatabaseError, DEFAULT_DB_PATH } = require('../db');
+const { scanAndSave } = require('../jobs/scanAndSave');
+const { renderReport } = require('./format');
 
 const HELP = `Usage: npm run scan [-- options]
 
-Scans your working SSD (read-only — nothing on any drive is ever changed), ranks its
-projects for moving to the Library HDD, and shows how full each drive is.
+Scans your working SSD (read-only — nothing on any drive is ever changed), saves the
+results to data/dashboard.db, ranks its projects for moving to the Library HDD, and
+shows how full each drive is.
 
 Options:
   -d, --details       Also show size by type, newest file, and score math for each project
-      --root <path>   Scan this folder instead of your working SSD ("drives.working" in config)
+      --root <path>   Scan this folder instead of your working SSD ("drives.working" in config).
+                      A preview: not saved to the database
   -h, --help          Show this help`;
 
 function readOptions(argv) {
@@ -84,6 +91,34 @@ async function assertRootExists(root) {
   }
 }
 
+// The pins you've made with `npm run pin`, for --root scans (which read the
+// database but never save to it). No database yet = no pins.
+function readSavedPins() {
+  if (!fs.existsSync(DEFAULT_DB_PATH)) return new Set();
+  const db = openDatabase({ readonly: true });
+  try {
+    return pinnedPathKeys(db);
+  } finally {
+    db.close();
+  }
+}
+
+// The saved scores belong to the scan's projects; put them together so the
+// report has both the scan's details and the scores (which include your pins).
+function withSavedScores(scanned, scored) {
+  const byPath = new Map(scored.map((p) => [p.relPath, p]));
+  return scanned.map((p) => {
+    const saved = byPath.get(p.relPath);
+    return {
+      ...p,
+      pinnedKeep: saved.pinnedKeep,
+      pinnedInConfig: saved.pinnedInConfig,
+      pinnedInDatabase: saved.pinnedInDatabase,
+      scoring: saved.scoring,
+    };
+  });
+}
+
 async function main(argv) {
   let options;
   try {
@@ -104,19 +139,38 @@ async function main(argv) {
   assertSafeLocations(config);
   assertAppNotInside(root, 'the folder being scanned');
 
+  // Only full scans of the Working SSD are saved (a --root scan sees one
+  // folder, or another drive, and saving it would mark everything else
+  // missing). Open the database BEFORE the scan, so a database problem shows
+  // up now, not after a long scan.
+  const db = options.root ? null : openDatabase();
+  const savedPins = options.root ? readSavedPins() : null;
+
   console.error(`Scanning ${root} (read-only)…`);
   const startedAt = Date.now();
   const progressLine = createProgressLine(process.stderr);
   let scan;
+  let saved = null;
+  let projects;
   try {
-    scan = await scanDrive(config, { root, now: startedAt, onProgress: progressLine.update });
+    if (db) {
+      saved = await scanAndSave({ config, db, now: startedAt, onProgress: progressLine.update });
+      scan = saved.scan;
+      projects = withSavedScores(scan.projects, saved.projects);
+    } else {
+      scan = await scanDrive(config, { root, now: startedAt, onProgress: progressLine.update });
+      // No Notion connection yet, so "Done" comes from exports alone.
+      const withPins = scan.projects.map((p) => {
+        const pinnedInDatabase = savedPins.has(folderKey(p.relPath));
+        return { ...p, pinnedInConfig: p.pinnedKeep, pinnedInDatabase, pinnedKeep: p.pinnedKeep || pinnedInDatabase };
+      });
+      projects = scoreProjects(withPins, config, startedAt);
+    }
   } finally {
     progressLine.clear();
+    db?.close();
   }
-
-  // Phase 1 has no Notion connection yet, so every project's status is
-  // unknown and "Done" comes from exports alone.
-  const projects = scoreProjects(scan.projects, config, startedAt).sort(byOffloadOrder);
+  projects.sort(byOffloadOrder);
 
   // How full each drive is. The move plan only makes sense for a scan of the
   // whole working SSD (a partial scan would undercount the Ready projects).
@@ -132,6 +186,8 @@ async function main(argv) {
       configSource: source,
       elapsedMs: Date.now() - startedAt,
       details: options.details,
+      saved,
+      dbPath: displayPath(),
       color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR,
       // In a terminal, fit the window. Saved to a file, never cut names short.
       width: process.stdout.isTTY ? process.stdout.columns || 100 : Infinity,
@@ -143,12 +199,9 @@ async function main(argv) {
 }
 
 main(process.argv.slice(2)).catch((error) => {
-  // Expected problems (bad settings, SSD not plugged in) get a plain message;
-  // anything else is a bug, so show the full details.
-  if (error instanceof ConfigError || error instanceof ScanError) {
-    console.error(`\n${error.message}`);
-  } else {
-    console.error(error);
-  }
+  // Expected problems (bad settings, SSD not plugged in, database busy or not
+  // installed) get a plain message; anything else is a bug, so show the full details.
+  const plain = error instanceof ConfigError || error instanceof ScanError ? error.message : describeDatabaseError(error);
+  console.error(plain ? `\n${plain}` : error);
   process.exitCode = 1;
 });

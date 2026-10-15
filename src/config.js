@@ -212,6 +212,15 @@ function assertAppNotInside(folder, label = folder) {
         '(for example ~/Code/SSD-Dashboard) and run it from there.',
     );
   }
+  // canonicalPath follows shortcuts, so this also catches a data/ folder that
+  // is really a shortcut (symlink) into this folder. The database lives in
+  // data/, so it must never end up on a media drive.
+  if (isInside(canonicalPath(DATA_DIR), canonicalPath(folder))) {
+    throw new ConfigError(
+      `The app's data/ folder leads into ${label} (${folder}).\n` +
+        'The database must never be written to your media drives. Make data/ a normal folder inside the app folder.',
+    );
+  }
 }
 
 // SAFETY: the app must not live on any of the three drives, and the drives

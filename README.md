@@ -13,17 +13,21 @@ you which ones to move off it — and whether they'll fit where they're going.
                                     projects                once the Library
                                                             reaches 90% full
           Move 1: finished + untouched    Move 2: oldest first
-          for 14 days                     (Phase 2)
+          for 14 days                     (Phase 3)
 ```
 
-**Phase 1 (now):** a Terminal command, `npm run scan`, that ranks the working
+**Phase 1 (done):** a Terminal command, `npm run scan`, that ranks the working
 SSD's projects for Move 1 and shows how full each drive is.
-**Phase 2 (next):** results saved in a database, a dashboard in your browser,
-and the Library → Archive list for Move 2.
+**Phase 2 (now):** scan results are saved in a database (`data/dashboard.db`),
+so `npm run report` shows them instantly without rescanning, and
+`npm run pin` marks projects you want to keep.
+**Phase 3 (next):** a dashboard in your browser, nightly scans, the Library →
+Archive list for Move 2, and Notion status.
 
 > **Safety promise.** This app only ever *reads* your drives. It never deletes,
 > moves, renames, or writes anything on the Working SSD, the Library, or the
-> Archive. The only folder it writes to is its own `data/` folder. A test
+> Archive. The only folder it writes to is its own `data/` folder (where the
+> database lives). A test
 > (`tests/safety.test.js`) fails if code that can change files ever sneaks into
 > the app. Moving projects stays your job (with Vericopy) until you ask for
 > that feature.
@@ -34,12 +38,16 @@ and the Library → Archive list for Move 2.
 
 - A Mac with your Working SSD plugged in (plug in the Library too, so the app
   can check how much room it has).
-- **Node.js 22 or newer** (20 still works). Check in Terminal:
+- **Node.js 22.14 or newer.** Check in Terminal:
   ```
   node -v
   ```
-  If it prints `v22.x` or higher, you're set. If it says "command not found" or
-  a lower number, install the **LTS** version from <https://nodejs.org>.
+  If it prints `v22.14.0` or higher (`v22.14` … `v22.x`, `v24.x`, …), you're
+  set. (Node 23 needs `v23.6.0` or higher.) If it says "command not found" or a
+  lower number (like `v22.11.0` or `v20.x`), install the **LTS** version from
+  <https://nodejs.org>, then run `npm install` again. Phase 2's database library
+  needs these versions (older ones crash it, so the app checks first and tells
+  you).
 
 ## 2. Get the code
 
@@ -50,10 +58,19 @@ Put the app on your Mac's internal drive, **not on any of your media drives**
 mkdir -p ~/Code && cd ~/Code
 git clone https://github.com/sbrignac29/SSD-Dashboard.git
 cd SSD-Dashboard
-git checkout claude/brave-ritchie-gwhc1j
+git checkout claude/clever-babbage-gcsvh9
 ```
 
-Already cloned it before? Just run `git pull` inside the folder.
+Already cloned it for Phase 1? Inside the folder, run:
+
+```
+git fetch
+git checkout claude/clever-babbage-gcsvh9
+npm install
+```
+
+(Phase 1 lives on the `claude/brave-ritchie-gwhc1j` branch; Phase 2 is on
+`claude/clever-babbage-gcsvh9`.)
 
 ## 3. Set up
 
@@ -62,8 +79,12 @@ npm install
 cp config.example.json config.json
 ```
 
-- `npm install` downloads the packages the app depends on. Phase 1 has none, so
-  it just finishes instantly. Phase 2 will add some.
+- `npm install` downloads the two packages the app depends on into a folder
+  called `node_modules`: **better-sqlite3** (talks to the database) and
+  **node-cron** (runs the nightly scan on a schedule). better-sqlite3 includes
+  ready-made versions for Apple Silicon and Intel Macs, so nothing needs to be
+  compiled. Run `npm install` again whenever you pull an update that changes
+  `package.json`.
 - `cp` copies the example settings into **your own** `config.json`. Git ignores
   that file, so your paths (and later, your Notion key) never get uploaded.
 
@@ -83,20 +104,41 @@ Made a `config.json` before the three-drive update? The app will say
 npm run scan
 ```
 
-Other ways to run it:
+This scans the Working SSD, **saves the results to the database**, and prints
+the ranked table, drive space, and move plan. At the bottom it says what
+changed in the database, e.g.
+`Saved to data/dashboard.db — 2 new · 41 updated · 1 no longer found`.
+
+All the commands:
 
 | Command | What it does |
 |---|---|
-| `npm run scan` | Scan the Working SSD and print the ranked table, drive space, and move plan |
+| `npm run scan` | Scan the Working SSD, save to the database, and print the ranked table, drive space, and move plan |
 | `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, which export counted, and the score math |
-| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder of shoots (its subfolders are treated as projects). Use it on a container like `NCHS Football` or on a whole drive — pointed at a single project folder, it would list that project's Footage/Exports subfolders as if they were separate projects. Your config lists still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
-| `npm run scan -- --root "/Volumes/BRIGSMEDIA LIBRARY"` | Peek at what's on the Library (its buckets still describe Move 1; the proper Move 2 view comes in Phase 2) |
+| `npm run report` | Print the saved results from the database, **without scanning**. Instant, and works with the SSD unplugged |
+| `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 7) |
+| `npm run pin` | List the pinned projects |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder of shoots (its subfolders are treated as projects) as a quick preview. Use it on a container like `NCHS Football` or on a whole drive — pointed at a single project folder, it would list that project's Footage/Exports subfolders as if they were separate projects. **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
+| `npm run scan -- --root "/Volumes/BRIGSMEDIA LIBRARY"` | Peek at what's on the Library. **Not saved** (its buckets still describe Move 1; the proper Move 2 view comes in Phase 3) |
 | `npm run scan -- --help` | List the options |
 
-(The `--` tells npm "everything after this goes to the scan command, not to npm".)
+(The `--` tells npm "everything after this goes to the command, not to npm".)
 
 The first time, macOS may ask whether Terminal can access files on a removable
 volume. Click **Allow**.
+
+**When does the database update?** Every `npm run scan` of the whole Working
+SSD (without `--root`). A rescan updates each project's row; it never creates
+duplicates. A project that's gone from the SSD (moved to the Library, renamed,
+deleted) is **marked missing, not deleted**, so its history stays.
+`npm run report` lists those under "No longer on the Working SSD". A scan
+that fails (SSD not plugged in) is recorded as failed and changes nothing else.
+
+**Nightly scans (not running yet).** The job that scans at 2:00 AM every night
+is built (`src/jobs/nightly.js`), but it starts with the dashboard server in
+Phase 3. Until then, the database updates only when you run `npm run scan`.
+Once it runs: your Mac needs to be awake and the SSD plugged in at 2 AM. A
+missed or failed night is harmless; it's logged, and the next one tries again.
 
 ## 5. Reading the report
 
@@ -131,6 +173,18 @@ Below the table:
 - **Skipped** — the recycle bin, system folders, shortcuts, hidden items.
 - **Warnings** — folders that couldn't be read, settings that name a folder
   that doesn't exist (probably a typo), files with impossible future dates.
+
+`npm run report` prints the same table from the database, plus:
+- the **date of the last scan** and how long ago it was (and a red warning if
+  a later scan failed, e.g. the SSD wasn't plugged in),
+- **Your pins**: projects you pinned with `npm run pin`,
+- **No longer on the Working SSD**: projects a scan used to see but the latest
+  one didn't (usually because you moved them to the Library), with the date
+  they were last seen and their last bucket.
+
+Its Drives and Move plan sections use how full the drives are right now, with
+the Ready projects from the last scan. It doesn't list loose files or skipped
+items (those aren't saved); run `npm run scan` for those.
 
 ## 6. When is a project Ready?
 
@@ -170,7 +224,8 @@ Below the table:
 - **Nothing uncertain:** a project isn't Ready if some of its folders couldn't
   be read, or if it has files with future dates (a camera with a wrong clock),
   because then the app can't be sure when you last worked on it.
-- A project pinned in `folders.keepPinned` is always Keep.
+- A pinned project (with `npm run pin`, or in `folders.keepPinned`) is always
+  Keep.
 
 **The score** ranks everything else:
 
@@ -193,7 +248,173 @@ Example: final export (70), last edited 67 days ago (halfway from 14 to 120 →
 `0.45×70 + 0.35×50 + 0.20×50 = 31.5 + 17.5 + 10 = 59` — and it's **Ready**,
 because it's finished and untouched for 14+ days.
 
-## 7. Settings (`config.json`)
+## 7. Pinning projects (always Keep)
+
+Some projects should stay on the Working SSD however finished they look: a
+client who comes back for re-edits, your reel, a template project. Pin them:
+
+```
+npm run pin -- "Parker Soccer 10-3"
+```
+
+```
+Pinned "Parker Soccer 10-3" as Keep.
+  Pinned as Keep (would be Ready).
+  Run the same command again to unpin it.
+```
+
+- Use the name exactly as the report shows it, **in quotes**. Upper/lower case
+  doesn't matter. For a container shoot, `"NCHS Football / Week 1"` and
+  `"NCHS Football/Week 1"` both work.
+- Typo? It lists the projects whose names contain what you typed, so a part
+  of the name works for finding it (`npm run pin -- week 1`).
+- Run the **same command again** to unpin. `npm run pin` on its own lists
+  everything that's pinned.
+- A pinned project is **always Keep**, through every future scan, until you
+  unpin it. The score still shows, so you can see what it would be.
+- Only the database changes; nothing on any drive does.
+
+**Two ways to pin.** `npm run pin` saves your pin in the database. You can
+also list folders under `folders.keepPinned` in `config.json` (handy for a
+whole container, like `"NCHS Football"`). Either one makes a project Keep. The
+app never edits `config.json` itself, so to unpin something that's pinned
+there, remove it from that list by hand. `npm run pin` tells you when that's
+the case.
+
+**Renamed a pinned folder?** A rename looks like a new project to the app (the
+old name is marked missing), so pin it again under its new name.
+
+## 8. The database: open it yourself
+
+All saved results live in one file: **`data/dashboard.db`** inside the app
+folder (e.g. `~/Code/SSD-Dashboard/data/dashboard.db`). It's an **SQLite**
+database: a complete database stored as a single file. Git ignores it, so it
+stays on your Mac.
+
+### Look inside with DB Browser for SQLite (free)
+
+1. **Install it.** Download the macOS version from
+   <https://sqlitebrowser.org/dl/> (pick Apple Silicon or Intel to match your
+   Mac), open the `.dmg`, and drag it to Applications. Or, if you use
+   Homebrew: `brew install --cask db-browser-for-sqlite`. If macOS says it
+   can't check the app, right-click it in Applications → **Open** → **Open**.
+2. **Open the database read-only.** In DB Browser choose
+   **File → Open Database Read Only…** and pick `data/dashboard.db` in the app
+   folder. (In the file picker, **⌘⇧G** lets you type a path like
+   `~/Code/SSD-Dashboard/data`.)
+   **Read-only matters:** if you edit something and leave it unsaved, DB Browser
+   locks the file, and a scan or pin will stop with "The database is busy".
+3. **Look around:**
+   - **Database Structure** tab: the **schema**, i.e. the three tables
+     (`projects`, `scans`, `archive_log`) and their columns.
+   - **Browse Data** tab: pick a table from the **Table** menu to see its rows.
+     Click a column header to sort; type in the box under a header to filter
+     (e.g. `Ready` under `bucket`).
+   - **Execute SQL** tab: paste a question (a "query") and press the ▶ button.
+
+Things to know when reading it:
+- **Dates are in UTC** (world time; the `Z` at the end), e.g.
+  `2026-10-15T07:00:00.000Z`. The queries below convert them to your Mac's
+  time with `datetime(…, 'localtime')`.
+- **Sizes are in bytes.** Divide by 1,000,000,000 for GB (`size_bytes / 1e9`).
+- **1 = yes, 0 = no** (for `has_final_export`, `pinned_keep`, `missing`, …).
+
+### Queries to paste into "Execute SQL"
+
+Projects still on the Working SSD, in bucket order (Ready, Review, Keep):
+
+```sql
+SELECT name, round(size_bytes / 1e9, 2) AS size_gb, score, bucket,
+       datetime(last_modified, 'localtime') AS last_edited, pinned_keep
+FROM projects
+WHERE kind = 'project' AND missing = 0
+ORDER BY CASE bucket WHEN 'Ready' THEN 0 WHEN 'Review' THEN 1 ELSE 2 END, score DESC;
+```
+
+How many projects and GB are in each bucket:
+
+```sql
+SELECT bucket, COUNT(*) AS projects, round(SUM(size_bytes) / 1e9, 2) AS gb
+FROM projects
+WHERE kind = 'project' AND missing = 0
+GROUP BY bucket;
+```
+
+Projects no longer on the Working SSD (moved to the Library, renamed, or deleted):
+
+```sql
+SELECT name, round(size_bytes / 1e9, 2) AS size_gb,
+       datetime(last_scanned, 'localtime') AS last_seen, bucket AS last_bucket
+FROM projects
+WHERE missing = 1;
+```
+
+Every scan, newest first, including failed ones:
+
+```sql
+SELECT id, datetime(started_at, 'localtime') AS started, status,
+       project_count, round(total_bytes / 1e9, 1) AS total_gb, errors
+FROM scans
+ORDER BY id DESC;
+```
+
+### What's in each table
+
+**`projects`**: one row per project folder (and per shared folder) on the
+Working SSD, updated by every scan.
+
+| Column | Meaning |
+|---|---|
+| `id` | Row number. Never changes |
+| `path` | Where the folder is, from the top of the drive (`NCHS Football/Week 1`). Unique: a rescan updates this row instead of adding another |
+| `name` | Name as the report shows it (`NCHS Football / Week 1`) |
+| `kind` | `project` (ranked) or `shared` (measured, never ranked) |
+| `client` | The container for container shoots (`NCHS Football`); empty for others until Notion sync (Phase 3) |
+| `size_bytes` | Total size |
+| `raw_bytes` … `other_bytes` | Size by type: raw, proxy, export, cache, project, other |
+| `file_count` | Number of files |
+| `last_modified`, `last_modified_file` | Newest real file, and which file |
+| `last_nle_save`, `last_nle_save_file` | Last save of a project file (.drp, .prproj, …). NLE = "non-linear editor" (Resolve, Premiere) |
+| `has_export`, `export_file` | Whether any export exists (drafts too), and an example file |
+| `has_final_export`, `final_export_file` | Whether a video export named "Final"/"FD" exists (the project is finished), and which file |
+| `future_dated_files`, `incomplete` | Signs the last-edit date is uncertain (camera clock, unreadable folders), which block Ready |
+| `newer_footage_file` | A video or photo more than a day newer than the final export (maybe another shoot still to edit), which blocks Ready. It's the last column, because it was added later |
+| `score`, `bucket`, `score_notes` | The result, and why a finished project isn't Ready yet or that it's pinned |
+| `pinned_keep` | 1 = you pinned it with `npm run pin`. Scans never change this |
+| `first_seen` | The first scan that found it |
+| `last_scanned` | The latest scan that found it |
+| `missing` | 1 = the latest scan didn't find it on the Working SSD. The row is kept for history |
+
+**`scans`**: one row per scan: `started_at`, `finished_at`, `status`
+(`finished` or `failed`), `root` (the folder scanned), `project_count`,
+`file_count`, `total_bytes`, and `errors` (the warnings, or why it failed, as a
+JSON list).
+
+**`archive_log`**: empty for now. When moving projects arrives (Phase 4) it
+gets one row per move: `archived_at`, `project_id` (points at the `projects`
+row), `project_path`, `destination_drive` (`library` or `archive`),
+`size_bytes`, `checksum_result`. Together, those rows are each project's trail
+(SSD → Library on one date → Archive on another), so you can always find it.
+
+### Prefer Terminal?
+
+macOS includes the `sqlite3` command:
+
+```
+sqlite3 -readonly data/dashboard.db
+```
+
+Then type `.mode box` (nicer tables), paste any query above, and type `.quit`
+to leave.
+
+### Back up or start over
+
+- **Back up:** copy `data/dashboard.db` somewhere while no scan is running.
+- **Start over:** delete `data/dashboard.db`; the next `npm run scan` makes a
+  new one. You lose your pins, the scan history, and the "no longer on the
+  Working SSD" list.
+
+## 9. Settings (`config.json`)
 
 | Setting | What it does |
 |---|---|
@@ -209,7 +430,7 @@ because it's finished and untouched for 14+ days.
 | `folders.ignore` | Top-level folders to skip completely |
 | `folders.shared` | Folders used across projects: measured, never ranked |
 | `folders.containers` | Folders that hold many shoots (like `NCHS Football`). Each subfolder becomes its own project |
-| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it |
+| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 7) |
 | `fileTypes.finalExportWords` | Words in an export's name (or its folder's) that mean "final" (`final`, `fd`) |
 | `fileTypes.notFinalWords` | Words that mean "not final" even if Final/FD is there too (`draft`, `rough`, `wip`) |
 | `fileTypes.*` (the rest) | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
@@ -228,7 +449,7 @@ JSON tips: text goes in "double quotes", items in a list are separated by
 commas, and there's **no comma after the last item**. If you break the file,
 the app tells you where.
 
-## 8. Checking the numbers against Finder
+## 10. Checking the numbers against Finder
 
 Run `npm run scan:details`, pick a project, and compare:
 
@@ -271,7 +492,7 @@ TB/GB).
 If something looks wrong, note the project name and what Finder says, and we'll
 adjust the rules.
 
-## 9. Naming exports and where to save things
+## 11. Naming exports and where to save things
 
 You **don't need to rename project folders** — folder names don't change scores.
 What matters:
@@ -307,7 +528,7 @@ media links break. And if you rename a folder that's listed in `config.json`
 (shared, containers, pinned...), update the name there too; the scan warns you
 about names it can't find.
 
-## 10. Run the tests
+## 12. Run the tests
 
 ```
 npm test
@@ -315,9 +536,14 @@ npm test
 
 Tests are small programs that run the app's code with known inputs and check
 the answers — including the scoring rules, the file sorting rules, the move
-plan, a scan of a fake drive, and the safety checks. All should say `pass`.
+plan, a scan of a fake drive, the database (scanning twice creates no
+duplicates, missing projects are kept, a pinned project is never Ready), the
+nightly schedule, and the safety checks. All should say `pass`.
 
-## 11. Troubleshooting
+The database tests use their own throwaway database inside `data/`; they never
+touch your real `data/dashboard.db`.
+
+## 13. Troubleshooting
 
 - **"Can't find /Volumes/BRIGSMEDIA. Is the drive plugged in?"** — plug it in,
   or run `ls /Volumes` and fix `drives.working` in `config.json`.
@@ -332,7 +558,23 @@ plan, a scan of a fake drive, and the safety checks. All should say `pass`.
   (cable, dock, sleep). Plug it back in and run the scan again.
 - **Library shows "not connected"** — plug it in to get the move plan's
   "will it fit" check. Everything else works without it.
-- **Odd syntax errors when running anything** — check `node -v` is 20 or newer.
+- **"The database library isn't installed"** — run `npm install` in the app
+  folder (needed once after pulling Phase 2).
+- **"The database library couldn't load"** — delete the `node_modules` folder
+  in the app folder and run `npm install`.
+- **"Your Node.js … is too old for the database library"** (or "Segmentation
+  fault") — install the current LTS from <https://nodejs.org> (22.14 or
+  newer; on Node 23, 23.6 or newer), then run `npm install` again.
+- **"The database is busy"** — another program is changing
+  `data/dashboard.db`, usually DB Browser with unsaved edits. Click **Write
+  Changes** or **Revert Changes** (or close it) and try again. Open it with
+  **Open Database Read Only** to avoid this.
+- **"No saved results yet"** — run `npm run scan` once; `npm run report` and
+  `npm run pin` read what it saves.
+- **"No project called … in the database"** (pin) — use the name the report
+  shows, in quotes. Names come from the last scan, so rescan after renaming.
+- **Odd syntax errors, or npm warnings about "engine"** — check `node -v` is
+  22.14 or newer (on Node 23, 23.6 or newer).
 
 ## Known limitations
 
@@ -343,7 +585,7 @@ plan, a scan of a fake drive, and the safety checks. All should say `pass`.
   anything Resolve-based. (A later phase can read the library's per-project
   save dates.)
 - **Exports and project files saved outside the project folder** aren't linked
-  to their project. See section 9.
+  to their project. See section 11.
 - **A final-looking name isn't proof.** The app ignores "Final" that comes from
   the project's own name, but a draft named, say, `State Final Recap v1.mp4` in
   a project called `NCHS Basketball` would still look final. That's why the
@@ -351,8 +593,19 @@ plan, a scan of a fake drive, and the safety checks. All should say `pass`.
 - **Copied footage keeps its original dates.** Finder keeps a file's modified
   date when copying, so footage copied from an old card looks old until you
   start editing (your project file and renders will then be newer).
-- **Move 2 (Library → Archive) list** comes in Phase 2. For now the move plan
+- **Move 2 (Library → Archive) list** comes in Phase 3. For now the move plan
   tells you how much to move once the Library hits 90%.
+- **Renaming a project folder** makes it look like a new project: the old name
+  is marked missing and the new name starts fresh (pin it again if it was
+  pinned).
+- **One Working SSD per database.** Projects are tracked by their path from the
+  top of the drive. If you point `drives.working` at a different drive, the
+  first drive's projects show as no longer on the SSD.
+- **Settings changes apply at the next scan.** `npm run report` shows the
+  scores saved by the last scan, so after editing `config.json` (weights,
+  pins, shared folders…) run `npm run scan` to see the effect. (Running
+  `npm run pin` also re-scores every project with your current weights, day
+  counts and pins; folder and file-type settings need a scan.)
 
 ## Project layout
 
@@ -360,17 +613,22 @@ plan, a scan of a fake drive, and the safety checks. All should say `pass`.
 config.example.json      default settings (copy to config.json)
 src/config.js            loads settings, runs safety checks
 src/cli/scan.js          the `npm run scan` command
-src/cli/report.js        formats the printed report
+src/cli/report.js        the `npm run report` command
+src/cli/pin.js           the `npm run pin` command
+src/cli/format.js        formats the printed reports
+src/db.js                the database: tables, saving scans, pins (writes only in data/)
+src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and the nightly job)
+src/jobs/nightly.js      the 2 AM nightly scan (starts with the dashboard server in Phase 3)
 src/scanner/scan.js      walks a drive (read-only) and collects facts
 src/scanner/classify.js  decides raw / proxy / export / cache / project / other, and final exports
 src/scanner/parseName.js pulls dates out of folder names ("Soccer 8-24")
 src/scanner/space.js     how full each drive is (read-only)
 src/scoring/score.js     the scoring formula and the Ready/Review/Keep rule
 src/scoring/plan.js      the move plan: will it fit, is the Library full
-src/server.js, src/db.js, src/notion/, src/offload/, src/jobs/   later phases (stubs)
-public/                  the dashboard web page (Phase 2)
+src/server.js, src/notion/, src/offload/   later phases (stubs)
+public/                  the dashboard web page (Phase 3)
 tests/                   automated tests
-data/                    the only folder the app writes to (not uploaded to GitHub)
+data/                    the only folder the app writes to: dashboard.db (not uploaded to GitHub)
 ```
 
 ## Glossary
@@ -387,16 +645,29 @@ data/                    the only folder the app writes to (not uploaded to GitH
 - **Symlink** — a shortcut to another file or folder. The scanner never follows
   them, so it can't wander outside your drives.
 - **Test** — code that runs other code with known inputs and checks the answers.
-- **Route** *(Phase 2)* — a web address the server answers, like
+- **Route** *(Phase 3)* — a web address the server answers, like
   `/api/projects`, paired with the function that builds the answer.
-- **Schema** *(Phase 2)* — the layout of the database: which tables exist and
-  which columns each has, like the column headers of a spreadsheet.
-- **SQLite** *(Phase 2)* — a complete database stored in one file
-  (`data/dashboard.db`).
+- **SQLite** — a complete database stored in one file (`data/dashboard.db`).
+- **Table / row / column** — a table is like one spreadsheet tab: each column
+  has a fixed name and type, and each row is one thing (one project, one scan).
+- **Schema** — the layout of the database: which tables exist and which
+  columns each has, like the column headers of a spreadsheet.
+- **SQL** — the language for asking a database questions (`SELECT … FROM
+  projects WHERE …`) and changing it (`INSERT`, `UPDATE`).
+- **Upsert** — "insert, or update if it's already there". How a rescan updates
+  a project's row instead of adding a duplicate.
+- **Transaction** — a group of database changes that happen all together or
+  not at all. A scan is saved in one transaction, so a crash halfway can't
+  leave half a scan behind.
+- **Migration** — a step that upgrades the database's layout (e.g. adds a
+  column) while keeping its data. The database remembers which steps it has.
+- **Cron expression** — five fields that describe a repeating time:
+  minute, hour, day of month, month, day of week. `0 2 * * *` = 2:00 AM daily.
 
 ## Roadmap
 
 1. ✅ Scanner, file classifier, scoring, `npm run scan`, three-drive config, drive space and move plan
-2. Database (SQLite) + dashboard web page + Library → Archive list (Move 2)
-3. Notion sync for project status, nightly scans
+2. ✅ Database (SQLite), `npm run report`, `npm run pin`, the nightly scan job
+3. Dashboard web page (the server also starts the nightly scans), Library →
+   Archive list (Move 2), Notion sync for project status
 4. Moving projects through Vericopy + a log of where each project went (only when you ask for it)
