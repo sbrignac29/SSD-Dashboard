@@ -77,7 +77,11 @@ function readyBlockers(project, daysSinceEdit, ageDays) {
     reasons.push("some of its folders couldn't be read");
   }
   if (project.newerFootageFile) {
-    reasons.push(`it has footage newer than its final export (${project.newerFootageFile}), so another shoot may still need editing`);
+    reasons.push(
+      `it has a video or photo newer than its final export (${project.newerFootageFile}): if that's new ` +
+        "footage, another shoot may still need editing; if it's a cut-down or re-export, move it into " +
+        'Exports or name it Final/FD',
+    );
   }
   return reasons;
 }

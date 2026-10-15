@@ -69,7 +69,9 @@ test('final exports: a video export named "Final" or "FD" (drafts are not final)
   assert.equal(isFinal('Promo FINALv2.mov', []), true);
   assert.equal(isFinal('Sunburned Final Cut.mov', []), true);
   assert.equal(isFinal('Soccer 8-24 v3.mp4', ['Exports']), false); // a draft in revision
-  assert.equal(isFinal('Highlights Final Draft.mp4', ['Exports']), false); // says it's a draft
+  assert.equal(isFinal('Highlights FINAL rough.mp4', ['Exports']), false); // says it's rough
+  assert.equal(isFinal('Highlights Final Draft.mp4', ['Exports']), true); // "Final Draft" = FD
+  assert.equal(isFinal('Highlights Draft 2.mp4', ['Exports']), false);
   assert.equal(isFinal('Soccer FD_Proxy.mov', []), false); // a proxy, not an export
   assert.equal(isFinal('Soccer FD.mp4', ['Render Cache']), false); // cache
   assert.equal(isFinal('game.mov', ['Footage'], ['Soccer Finals Temp']), false); // the project name never counts
@@ -87,6 +89,32 @@ test('a "Final" or "FD" that is only part of the project or event name does not 
   assert.equal(isFinal('Naperville FD Recruitment FINAL.mp4', ['Exports'], fireDept), true);
 });
 
+test('the export\'s OWN Final still counts when the project name has Final/FD in it', () => {
+  const { isFinal } = createClassifier(withDefaults().fileTypes);
+  const regional = ['NCHS Basketball Regional Final'];
+  assert.equal(isFinal('Highlights FINAL.mp4', ['Exports'], regional), true);
+  assert.equal(isFinal('Highlights.mp4', ['Final Exports'], regional), true);
+  assert.equal(isFinal('Highlights.mp4', ['Exports', 'Final'], regional), true);
+  assert.equal(isFinal('Promo FD.mp4', ['Exports'], ['Naperville FD']), true);
+  // Container game names count as project name too
+  assert.equal(isFinal('Week 11 State Final Highlights v1.mp4', ['Exports'], ['NCHS Football', 'Week 11 State Final']), false);
+});
+
+test('"Soccer Finals Temp": drafts named after the game are not final ("Finals" = "Final")', () => {
+  const { isFinal } = createClassifier(withDefaults().fileTypes);
+  const project = ['Soccer Finals Temp'];
+  assert.equal(isFinal('Soccer Final v1.mp4', ['Exports'], project), false);
+  assert.equal(isFinal('Sectional Final Highlights v1.mp4', ['Exports'], project), false);
+  assert.equal(isFinal('Highlights FINAL.mp4', ['Exports'], project), true);
+  assert.equal(isFinal('Sectional Final Highlights FD.mp4', ['Exports'], project), true);
+});
+
+test('drafts inside a final-exports folder are not final', () => {
+  const { isFinal } = createClassifier(withDefaults().fileTypes);
+  assert.equal(isFinal('Veterans Day v1.mp4', ['Final Exports', 'Drafts']), false);
+  assert.equal(isFinal('Highlights v2.mp4', ['Exports', 'State Final']), false); // a game round, not a verdict
+});
+
 test('Semi-Final, Quarter-Final, Pre-Final and Not Final are not finals', () => {
   const { isFinal } = createClassifier(withDefaults().fileTypes);
   assert.equal(isFinal('Semi-Final Highlights v2.mp4', ['Exports']), false);
@@ -100,6 +128,8 @@ test('timestamps and random IDs in phone/app file names are not versions', () =>
   assert.equal(classify('RPReplay_Final1726851234.MP4', ['Reference']), 'raw');
   assert.equal(isFinal('RPReplay_Final1726851234.MP4', ['Reference']), false);
   assert.equal(classify('0B9C5E3A-FD12-4C8E-9A51-3D2F6E7B8C90.mov', []), 'raw');
+  assert.equal(classify('trim.0B9C5E3A-FD12-4C8E-9A51-3D2F6E7B8C90.MOV', ['Footage']), 'raw'); // iPhone trim
+  assert.equal(classify('0B9C5E3A-FD12-4C8E-9A51-3D2F6E7B8C90 2.MOV', []), 'raw'); // Finder duplicate
   assert.equal(isFinal('Highlights FD2.mp4', ['Exports']), true); // a short version number is fine
 });
 

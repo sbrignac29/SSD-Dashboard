@@ -255,6 +255,7 @@ function recordFile(facts, tracking, name, dir, stats, classifier, now) {
     facts.exportExampleFile = relPath;
   }
   if (category === 'export' && kind === 'video') facts.hasVideoExport = true;
+  if (category === 'raw' && kind === 'video') tracking.anyRawVideo = true;
   const finalKind = classifier.finalExportKind(name, dir.context);
   if (finalKind === 'video') keepNewest(tracking, 'finalVideo', relPath, stats.mtimeMs);
   if (finalKind === 'photo') keepNewest(tracking, 'finalPhoto', relPath, stats.mtimeMs);
@@ -296,12 +297,12 @@ async function assertDriveStillThere(root) {
 
 // Decides whether the project is finished, once every file has been seen.
 // A video project needs a final VIDEO export; a final photo only counts for a
-// project with no video exports at all (a photo shoot), so a "Thumbnail
-// FINAL.jpg" can't make a video project look finished.
+// photo shoot — a project with no video footage and no video exports at all —
+// so a "Thumbnail FINAL.jpg" can't make a video project look finished.
 // Footage shot more than a day after the final export suggests another shoot
 // still waiting to be edited (e.g. Game 2 in a folder where Game 1 is done).
 function settleFinalExport(facts, tracking) {
-  const isPhotoProject = !facts.hasVideoExport;
+  const isPhotoProject = !facts.hasVideoExport && !tracking.anyRawVideo;
   const final = tracking.finalVideo ?? (isPhotoProject ? tracking.finalPhoto : null);
   if (!final) return;
   facts.hasFinalExport = true;
@@ -313,7 +314,7 @@ function settleFinalExport(facts, tracking) {
 
 async function scanFolder(target, { classifier, now, onProgress, progress, root }) {
   const facts = newFacts(target);
-  const tracking = { finalVideo: null, finalPhoto: null, rawVideo: null, rawPhoto: null };
+  const tracking = { finalVideo: null, finalPhoto: null, rawVideo: null, rawPhoto: null, anyRawVideo: false };
   // The "stack" is a to-do list of folders still to look inside. We take one
   // off, list it, and add any subfolders we find back onto the list.
   const stack = [{ absPath: target.absPath, folders: [], context: classifier.rootContext(target.segments) }];

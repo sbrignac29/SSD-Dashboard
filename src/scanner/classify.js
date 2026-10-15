@@ -66,27 +66,67 @@ function wordList(name) {
   return toWords(name).trim().split(' ').filter(Boolean);
 }
 
-// Removes words that also appear in the project's own name (once each), so a
-// word that's just part of the event's name doesn't count as a signal:
-//   project "NCHS Basketball Regional Final", file "Regional Final Highlights v1"
-//   → " highlights v1 "   (a draft — "Final" was only the game's name)
-function withoutProjectWords(words, projectWords) {
+// "finals" and "final" (and other simple plurals) count as the same word
+// when comparing with the project's name.
+function singular(word) {
+  return word.length > 3 && word.endsWith('s') ? word.slice(0, -1) : word;
+}
+
+// Removes the parts of a name that just repeat the project's own name, so a
+// word that's only part of the event's name doesn't count as a signal. Only
+// runs of 2+ words are removed, so a lone "Final" the editor typed still counts:
+//   project "NCHS Basketball Regional Final":
+//     "Regional Final Highlights v1" → " highlights v1 "   (a draft)
+//     "Highlights FINAL"             → " highlights final " (final)
+//   project "Soccer Finals Temp":
+//     "Soccer Final v1"              → " v1 "                (a draft)
+function withoutProjectWords(words, projectSegments) {
   const remaining = words.trim().split(' ').filter(Boolean);
-  for (const word of projectWords) {
-    const index = remaining.indexOf(word);
-    if (index !== -1) remaining.splice(index, 1);
+  const same = (a, b) => singular(a) === singular(b);
+  for (const segment of projectSegments) {
+    // Longest runs first, so "naperville fd recruitment" goes before "naperville fd".
+    for (let length = segment.length; length >= 2; length -= 1) {
+      for (let start = 0; start + length <= segment.length; start += 1) {
+        const run = segment.slice(start, start + length);
+        for (let i = 0; i + length <= remaining.length; i += 1) {
+          if (run.every((word, k) => same(word, remaining[i + k]))) {
+            remaining.splice(i, length);
+            i -= 1;
+          }
+        }
+      }
+    }
   }
   return ` ${remaining.join(' ')} `;
 }
 
-// "Semi-Final", "Quarter-Final", "Pre-Final" and "Not Final" are not finals.
+// Game rounds and qualifiers that make "Final" part of an event's name, not a
+// verdict on the export: "Semi-Final", "Sectional Final", "State Final",
+// "Not Final". (A FINAL tag after the event name still counts:
+// "State Final Highlights FINAL".)
+const QUALIFIED_FINAL =
+  / (?:semi|quarter|pre|not|sectional|regional|state|district|conference|championship|section|super) final(?:v?\d{1,4})?(?= )/g;
+
 function withoutQualifiedFinals(words) {
-  return words.replace(/ (?:semi|quarter|pre|not) final(?:v?\d{1,4})?(?= )/g, '');
+  return words.replace(QUALIFIED_FINAL, '');
 }
 
-// Names some apps give files: a random unique ID like
-// 0B9C5E3A-FD12-4C8E-9A51-3D2F6E7B8C90. Any "word" in it is a coincidence.
-const UUID_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// "FD" may well stand for "Final Draft", so the spelled-out phrase means
+// final too — while "Draft" on its own still means a draft.
+function finalDraftAsFinal(words) {
+  return words.replace(/ final drafts?(?= )/g, ' fd');
+}
+
+// Random unique IDs some apps put in file names, e.g. iPhone's
+// "trim.0B9C5E3A-FD12-4C8E-9A51-3D2F6E7B8C90.MOV". Any "word" in one is a coincidence.
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+// The words of a name that can carry a signal: minus random IDs, minus the
+// project's own name, minus qualified finals ("Semi-Final", "State Final").
+function signalOf(name, projectSegments) {
+  const words = toWords(String(name).replace(UUID, ' '));
+  return finalDraftAsFinal(withoutQualifiedFinals(withoutProjectWords(words, projectSegments)));
+}
 
 function normalizeExtension(ext) {
   const lower = String(ext).trim().toLowerCase();
@@ -130,12 +170,9 @@ function createClassifier(fileTypes) {
     return null;
   }
 
-  // The words of a file's name that can carry a signal: minus the project's
-  // own name, minus "Semi-Final" and friends, and none at all for random IDs.
+  // The words of a file's name that can carry a signal (see signalOf).
   function signalWords(fileName, context) {
-    const base = path.basename(fileName, path.extname(fileName));
-    if (UUID_NAME.test(base)) return ' ';
-    return withoutQualifiedFinals(withoutProjectWords(toWords(base), context.projectWords));
+    return signalOf(path.basename(fileName, path.extname(fileName)), context.projectSegments);
   }
 
   // A "context" remembers what we've learned from the folders above a file,
@@ -154,8 +191,9 @@ function createClassifier(fileTypes) {
       proxy: words.some((w) => hasPhrase(w, rules.proxyFolders)),
       export: false,
       final: false,
+      draft: false,
       hidden: false,
-      projectWords: projectPath.flatMap(wordList),
+      projectSegments: projectPath.map(wordList),
     };
   }
 
@@ -163,19 +201,22 @@ function createClassifier(fileTypes) {
   // this folder's own name says. A folder of FINAL exports is one whose name
   // says both export and final ("Final Exports", "FINAL FINAL RENDERS"), or
   // one named final inside an export folder ("Exports/FD", "Exports/Final").
-  // A plain "Final" folder elsewhere could be footage of a final game.
+  // A plain "Final" folder elsewhere could be footage of a final game, and a
+  // "Drafts" folder anywhere below cancels it ("Final Exports/Drafts/").
   function childContext(parent, folderName) {
     const words = toWords(folderName);
     const isExportFolder = hasPhrase(words, rules.exportFolders);
-    const signal = withoutQualifiedFinals(withoutProjectWords(words, parent.projectWords));
-    const namesFinal = hasPhrase(signal, rules.finalExportWords) && !hasPhrase(signal, rules.notFinalWords);
+    const signal = signalOf(folderName, parent.projectSegments);
+    const namesDraft = hasPhrase(signal, rules.notFinalWords);
+    const namesFinal = hasPhrase(signal, rules.finalExportWords) && !namesDraft;
     return {
       cache: parent.cache || hasPhrase(words, rules.cacheFolders),
       proxy: parent.proxy || hasPhrase(words, rules.proxyFolders),
       export: parent.export || isExportFolder,
-      final: parent.final || ((parent.export || isExportFolder) && namesFinal),
+      final: !namesDraft && (parent.final || ((parent.export || isExportFolder) && namesFinal)),
+      draft: parent.draft || namesDraft,
       hidden: parent.hidden || folderName.startsWith('.'),
-      projectWords: parent.projectWords,
+      projectSegments: parent.projectSegments,
     };
   }
 
@@ -219,7 +260,7 @@ function createClassifier(fileTypes) {
     if (kind !== 'video' && kind !== 'photo') return null;
     if (classifyFile(fileName, context) !== 'export') return null;
     const signal = signalWords(fileName, context);
-    if (hasPhrase(signal, rules.notFinalWords)) return null;
+    if (context.draft || hasPhrase(signal, rules.notFinalWords)) return null;
     return context.final || hasPhrase(signal, rules.finalExportWords) ? kind : null;
   }
 

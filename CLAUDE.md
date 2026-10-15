@@ -64,11 +64,13 @@ How this is enforced today:
   never counts, e.g. "Soccer Finals Temp"), and whether it has a **final export**
   (`src/scanner/classify.js` → `finalExportKind`): an export whose name has a
   `fileTypes.finalExportWords` word ("Final"/"FD"; version suffixes up to 4 digits, e.g.
-  FINALv2) or that sits in a final-exports folder ("Final Exports", "Exports/FD"). Words that
-  also appear in the project's own path don't count (a "Regional Final" project's
-  "Regional Final Highlights v1" is a draft), nor do Semi/Quarter/Pre/Not-Final,
-  `notFinalWords` (draft/rough/wip), or UUID file names. Video finals count; photo finals only
-  for projects with no video exports. Plain exports may be drafts in revision and don't mean
+  FINALv2; "Final Draft" counts as FD) or that sits in a final-exports folder ("Final Exports",
+  "Exports/FD"). Runs of 2+ words repeating the project's path don't count (singular/plural
+  folded: "Regional Final Highlights v1" in a "...Regional Final" project, "Soccer Final v1" in
+  "Soccer Finals Temp" are drafts; "Highlights FINAL" there is final), nor do game rounds
+  (Semi/Quarter/Sectional/Regional/State/District/Conference/Championship-Final, Pre/Not-Final),
+  `notFinalWords` (draft/drafts/rough/wip, also as a folder), or UUIDs anywhere in a name.
+  Video finals count; photo finals only for projects with no raw video and no video exports. Plain exports may be drafts in revision and don't mean
   finished. It records the newest final export file, and `newerFootageFile` when raw footage
   is more than a day newer than it (another shoot still to edit). It uses **modification time (mtime), never access time**.
   Hidden/housekeeping files (`.DS_Store`, `._*`, `Thumbs.db`) count toward size but

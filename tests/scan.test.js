@@ -81,6 +81,9 @@ describe('scanner on a fake drive', () => {
     // A video project with a final thumbnail but only draft videos: NOT finished
     file('Promo Spot/Exports/Promo v3.mp4', 400, 30);
     file('Promo Spot/Exports/Thumbnail FINAL.jpg', 10, 30);
+    // A video project with footage but no video export yet, and a final thumbnail: NOT finished
+    file('Rowdies Promo/Footage/C0001.MP4', 700, 60);
+    file('Rowdies Promo/Exports/Thumbnail FINAL.jpg', 10, 40);
     file('$RECYCLE.BIN/junk.mov', 10, 5);
     file('.Spotlight-V100/store', 10, 0);
     file('SUNBURNED.mp4', 700, 300);
@@ -287,6 +290,8 @@ describe('scanner on a fake drive', () => {
     const promo = byName(scan.projects, 'Promo Spot');
     assert.equal(promo.hasExport, true);
     assert.equal(promo.hasFinalExport, false); // a final thumbnail doesn't finish a video project
+    const rowdies = byName(scan.projects, 'Rowdies Promo');
+    assert.equal(rowdies.hasFinalExport, false); // video footage makes it a video project
   });
 
   it('a whole-SSD scan reports its scope', async () => {

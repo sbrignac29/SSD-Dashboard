@@ -142,22 +142,31 @@ Below the table:
   - a video export saved in a final-exports folder: one whose name says both
     final and export/render (`Final Exports`, `FINAL FINAL RENDERS`), or a
     `Final`/`FD` folder inside `Exports`.
-  - For a **photo-only** project (no video exports at all), a photo export
-    named or filed the same way counts.
+  - "Final Draft" spelled out counts as final too (in case that's what FD
+    stands for).
+  - For a **photo-only** project (no video footage or video exports at all),
+    a photo counts the same way — but it has to be an export, so save it in an
+    `Exports` folder: `Girls Golf Banners/Exports/Emma Banner FINAL.png`.
 
   What does **not** count, so drafts aren't mistaken for finals:
-  - a "Final"/"FD" that's only part of the **project's own name** — in
+  - words that just repeat the **project's own name** — in
     `NCHS Basketball Regional Final`, `Regional Final Highlights v1.mp4` is a
-    draft, while `Regional Final Highlights FD.mp4` is final;
-  - "Semi-Final", "Quarter-Final", "Pre-Final", "Not Final";
-  - names with **Draft**, **Rough** or **WIP** (`fileTypes.notFinalWords`);
+    draft, while `Highlights FINAL.mp4` or `Regional Final Highlights FD.mp4`
+    is final. (In `Soccer Finals Temp`, `Soccer Final v1.mp4` is a draft too.)
+  - a game round: "Semi-Final", "Quarter-Final", "Sectional/Regional/State/
+    District/Conference/Championship Final" — and "Pre-Final", "Not Final";
+  - names with **Draft**, **Drafts**, **Rough** or **WIP**
+    (`fileTypes.notFinalWords`), including anything in a `Drafts` folder;
   - long numbers and random IDs that phones put in file names.
 
   Later, Notion status (Complete/Delivered) will count as finished too.
 - **Untouched for 14 days** means no file in the project changed in that time.
-- **No newer footage:** if there's footage shot more than a day *after* the
-  final export (say, Game 2 in a folder where Game 1 is finished), the project
-  waits in Review — there may be another shoot still to edit.
+- **No newer footage:** if there's a video (or, for photo shoots, a photo)
+  more than a day *newer* than the final export — say, Game 2 in a folder where
+  Game 1 is finished — the project waits in Review: there may be another shoot
+  still to edit. If it's actually a cut-down or re-export (a vertical version
+  for social), move it into `Exports` or name it Final/FD, and the project can
+  become Ready.
 - **Nothing uncertain:** a project isn't Ready if some of its folders couldn't
   be read, or if it has files with future dates (a camera with a wrong clock),
   because then the app can't be sure when you last worked on it.
@@ -271,8 +280,10 @@ What matters:
    `Soccer 8-24 FD.mp4` — or save it in a `Final Exports` folder. That's how the
    app knows a project is done. Leave drafts and revision cuts without it
    (`Soccer 8-24 v3.mp4`), or call them "Draft". For a playoff project like
-   `Regional Final`, the export still needs its own FD/Final: the "Final" in the
-   game's name doesn't count.
+   `Regional Final`, the export still needs its own FD/Final
+   (`Highlights FINAL.mp4`): the "Final" in the game's name doesn't count.
+   Save cut-downs and social versions in `Exports` too, so they aren't mistaken
+   for new footage.
 2. **Save it inside the project folder**, ideally in an `Exports` subfolder:
    `Soccer 8-24/Exports/Soccer 8-24 FD.mp4`. Exports saved in the shared
    `FINAL EXPORTS` / `FINAL FINAL RENDERS` folders, or loose at the top of the

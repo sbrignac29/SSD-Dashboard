@@ -57,6 +57,6 @@
     "exportFolderWords": ["export", "exports", "exported", "deliverable", "deliverables", "render", "renders", "output", "outputs"],
     "exportFileWords": ["final", "fd", "export", "exported", "master", "deliverable"],
     "finalExportWords": ["final", "fd"],
-    "notFinalWords": ["draft", "rough", "wip"]
+    "notFinalWords": ["draft", "drafts", "rough", "wip"]
   }
 }

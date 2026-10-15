@@ -289,7 +289,7 @@ function scoreExplanation(p, weights) {
 
 function exportDetail(p) {
   if (p.hasFinalExport) return `final — ${p.finalExportFile}`;
-  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (nothing named "Final"/"FD" or in a Final Exports folder)`;
+  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no export counted as final — see README section 6)`;
   return 'none found in this folder';
 }
 
@@ -391,7 +391,7 @@ function detailsSection({ projects, scored, weights }, paint) {
     if (p.pinnedKeep) lines.push('     Pinned        yes — always Keep (folders.keepPinned)');
     if (p.skippedLinks > 0) lines.push(`     Not followed  ${plural(p.skippedLinks, 'shortcut')} (symlinks)`);
     if (p.incomplete) lines.push("     Incomplete    some folders or files couldn't be read — see Warnings");
-    if (p.newerFootageFile) lines.push(`     Newer footage ${p.newerFootageFile} is newer than the final export`);
+    if (p.newerFootageFile) lines.push(`     Newer media   ${p.newerFootageFile} is newer than the final export`);
   });
   return lines;
 }

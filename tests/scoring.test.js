@@ -178,7 +178,8 @@ test('files with future dates (wrong camera clock) block Ready', () => {
 test('footage newer than the final export blocks Ready, naming the file', () => {
   const result = score({ hasFinalExport: true, newerFootageFile: 'Game 2/Footage/clip.mov' });
   assert.equal(result.bucket, 'Review');
-  assert.match(result.notes[0], /footage newer than its final export \(Game 2\/Footage\/clip\.mov\)/);
+  assert.match(result.notes[0], /newer than its final export \(Game 2\/Footage\/clip\.mov\)/);
+  assert.match(result.notes[0], /another shoot may still need editing/);
 });
 
 test("folders that couldn't be read block Ready", () => {
