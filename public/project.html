@@ -23,6 +23,7 @@
         <nav aria-label="Pages">
           <a href="/">Overview</a>
           <a href="library.html">Done HDD</a>
+          <a href="settings.html">Settings</a>
         </nav>
         <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
       </div>
@@ -62,7 +63,7 @@
               <span class="muted">Library projects aren't scored: Move 2 goes oldest first (see Done HDD).</span>
             </p>
             <p x-show="data.project.kind === 'shared'" class="muted">
-              A shared folder (folders.shared in config.json): used by many projects, so it's measured but never ranked or moved.
+              A shared folder (“Shared folders” on the Settings page): used by many projects, so it's measured but never ranked or moved.
             </p>
 
             <div class="banner banner-info" x-show="data.project.missing">

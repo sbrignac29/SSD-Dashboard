@@ -25,7 +25,8 @@ might not know (route, schema, module, ...). Don't just hand over code.
 
 - The app must NEVER delete, move, rename, or write anything on the SSD — or on the
   Library or Archive drives.
-- The only place the app writes is the `data/` folder.
+- The only place the app writes is the `data/` folder. It never edits `config.json`: the
+  Settings page saves into the database (`settings` table), see "Settings page" below.
 - Offload/delete features stay as empty stubs until the owner explicitly asks for them
   (planned for Phase 5; the dashboard shows "Move to HDD" disabled, "Coming in Phase 5").
   When built, a "move" must be copy → verify (Vericopy checksums) → only then remove the
@@ -52,12 +53,15 @@ How this is enforced today:
 - `src/config.js` → `assertSafeLocations()` refuses to run if the app itself, or its `data/`
   folder (e.g. via a symlink), is on any of the three drives, or if any two drive paths
   overlap. `assertAppNotInside()` does the same for a `--root` folder. `npm run scan`,
-  `npm run pin`, the server at startup, the scan runner (every Scan now) and
-  the Pin route call `assertSafeLocations()` before writing.
+  `npm run pin`, the server at startup, the scan runner (every Scan now), the Pin route and
+  every Settings save/reset call `assertSafeLocations()` before writing (a save checks the NEW
+  settings, so overlapping drive paths or a drive containing the app are refused).
 - The server (`src/server.js`) binds `server.host` (127.0.0.1 by default), answers only
   requests whose Host is localhost/127.0.0.1/[::1] (DNS-rebinding guard; off when the owner
   opts into phone access with host 0.0.0.0), and refuses POSTs without
-  `Content-Type: application/json` (so another website's form can't press Scan or Pin).
+  `Content-Type: application/json` (so another website's form can't press Scan, Pin or save
+  settings). With phone access on, settings can only be changed from a loopback address
+  (`fromThisMac`); other devices see the page read-only (`canEdit: false`).
   It serves only `public/` plus two fixed files from node_modules (`/vendor/...`, a Map, not a path).
 - The guard also trips on file-changing words inside plain strings (e.g. a message saying
   "window stays open (…)" matched `open(`): reword the text, don't widen the allowlist.
@@ -140,7 +144,8 @@ How this is enforced today:
   `POST /api/projects/:id/pin` (`togglePinById`), `GET /api/library` (Done HDD page + Archive
   list), `POST /api/scan` (202 started, or 200 with `started: false` and `reason`
   already-running / nothing-connected — not an error) and `GET /api/scan` (progress, polled
-  every 500 ms by the page).
+  every 500 ms by the page), `GET /api/settings`, `POST /api/settings` (`{ values: { key: value } }`,
+  400 + reason when invalid) and `POST /api/settings/reset`.
 - Scan now (`src/web/scanRunner.js`): one run at a time; scans the Working SSD then the
   Library, each through `scanAndSave` (so failures still get a `failed` scans row), skipping a
   drive whose folder isn't there (no failed row: "Not connected" is not an error). The Archive
@@ -162,7 +167,7 @@ How this is enforced today:
   `drive_free_bytes`).
 - Unplugged drives are never errors or empty screens: "Not connected" + last scanned date (+
   how full at that scan), and every page still shows the saved results.
-- Browser side (`public/`): plain HTML pages (`index.html`, `project.html?id=`, `library.html`),
+- Browser side (`public/`): plain HTML pages (`index.html`, `project.html?id=`, `library.html`, `settings.html`),
   each one Alpine component (`public/js/*.js`, global functions loaded before Alpine with
   `defer`), shared helpers in `public/js/common.js` (`Dashboard.api`, formatters, theme,
   Chart.js size chart, folder tree built with `textContent`). Alpine 3 and Chart.js 4 are
@@ -171,6 +176,28 @@ How this is enforced today:
   `data-theme` (button cycles Auto/Light/Dark, saved in localStorage). Phone: ≤720 px, table
   rows become cards (`.stack-table`, `data-label`). Chart: one series (GB by type), single blue
   `--series-1`, value labels at bar tips, "Show the numbers" table.
+
+## Settings page (`src/settings.js`, `public/settings.html`)
+
+- Three layers: `config.example.json` ← `config.json` ← Settings page overrides (one row in the
+  `settings` table, JSON keyed by setting name). `loadAppConfig()` combines them and is what
+  every command uses (`npm run scan/report/pin`; it opens the DB read-only, and an
+  outdated DB — `error.outdated` — counts as no overrides). The server uses
+  `createSettingsStore({ db, loadFileConfig })` → `current()`, `view()`, `save(values)`, `reset()`.
+- `SECTIONS`/`FIELDS` list what the page can edit (key, type text/number/list, label, help,
+  effect now/rescore/scan); the page renders from `GET /api/settings`, so add a field there, not in
+  the HTML. Interdependent numbers save as one group (`saveAs`: `weights`, `ageDays`,
+  `libraryFull`) so a later config.json edit can't split them.
+- A save parses the values, applies them to the current settings, runs `validateConfig` and
+  `assertSafeLocations`, stores only values that differ from the file settings (a value set
+  back to config.json's is dropped), and re-scores in the same transaction
+  (`writeSavedSettings`).
+  Saves are refused (409) while a scan runs: the scan would re-score with the settings it
+  started with and undo the change.
+- `server.port`/`server.host` are not editable (shown under "Only in config.json"): they apply at
+  startup, and phone access should be a deliberate file edit.
+- Saved values that stop fitting config.json: `current()` throws a ConfigError pointing to the
+  Settings page; `view()` still loads with `problem`, and saving a fix keeps the other overrides.
 
 ## Storage (Phase 2, extended in Phase 3)
 
@@ -212,7 +239,8 @@ How this is enforced today:
   same-key rows, so the pin moves to the present row and none is left unreachable. It suggests
   substrings on a miss. A missing project's pin can be toggled, but it isn't re-scored
   (`scoring: null` in the result, also for `pinned-in-config`).
-- `npm run report` prints stored scores; config edits take effect at the next scan or pin.
+- `npm run report` prints stored scores; config.json edits take effect at the next scan or pin
+  (Settings page saves re-score at once).
   Its Drives/move-plan section reads drive space live (statfs) with the saved Ready projects.
 - Write transactions use `.immediate()` so a busy database waits (5 s) instead of failing at
   once; `describeDatabaseError()` turns `SQLITE_BUSY` (e.g. DB Browser with unsaved edits),
@@ -232,8 +260,9 @@ How this is enforced today:
   Library scans have their own rows (same path, `drive = 'library'`), so the Library's
   contents are known even while it's unplugged.
 
-Schema (version 3 — migration 1 made the tables, 2 added `newer_footage_file`, 3 rebuilt
-`projects` with `drive` + UNIQUE (drive, path) + `subfolders`, and added the scans columns):
+Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`, 3 rebuilt
+`projects` with `drive` + UNIQUE (drive, path) + `subfolders`, and added the scans columns,
+4 added `settings`):
 - `projects`: `id`, `drive` (working/library/archive), `path` (relative to the drive top; UNIQUE
   with drive), `name`, `kind` (project/shared), `client` (container name for container shoots),
   `size_bytes`, `raw|proxy|export|cache|project|other_bytes`, `file_count`,
@@ -246,6 +275,8 @@ Schema (version 3 — migration 1 made the tables, 2 added `newer_footage_file`,
 - `scans`: `id`, `started_at`, `finished_at`, `status` (finished/failed), `root`, `project_count`,
   `file_count`, `total_bytes`, `errors` (JSON list of messages), `drive` (working/library),
   `drive_total_bytes`, `drive_free_bytes` (statfs at the scan; NULL for older/failed scans).
+- `settings`: exactly one row (`id` = 1, CHECK), `overrides` (JSON, `{}` = nothing changed),
+  `updated_at`. Saving is an UPDATE, never a delete.
 - `archive_log` (empty until Phase 5): `id`, `archived_at`, `project_id` → projects, `project_path`,
   `destination_drive` (library/archive), `size_bytes`, `checksum_result`.
 
@@ -259,7 +290,8 @@ Schema (version 3 — migration 1 made the tables, 2 added `newer_footage_file`,
    Overview (headline, Scan now with progress, drive bar, filterable/sortable table, size
    chart), project page (Ready checklist, score parts, folder tree, Pin, "Move to HDD"
    disabled), Done HDD page (Library oldest first + Archive list past the limit). Library
-   scans saved (migration 3).
+   scans saved (migration 3). Settings page (migration 4): edit config from the browser,
+   saved in the database.
 4. Notion sync (`src/notion/sync.js`): add `notion_status` as a migration, pass it to scoring
    (`donePart` already reads `notionStatus`), and fill the table's Status column.
 5. Moves via Vericopy (`src/offload/vericopy.js`) + `archive_log` hops — only when explicitly
@@ -301,6 +333,7 @@ Schema (version 3 — migration 1 made the tables, 2 added `newer_footage_file`,
 
 ```
 src/config.js            settings loader + safety location checks
+src/settings.js          Settings page: editable fields, checks, config.json + saved overrides (loadAppConfig)
 src/cli/scan.js          the `npm run scan` command
 src/cli/report.js        the `npm run report` command
 src/cli/pin.js           the `npm run pin` command
@@ -308,7 +341,7 @@ src/cli/format.js        turns results into the printed reports (no disk, no dat
 src/server.js            the dashboard server (`npm start`): Express app, routes, guards, startup
 src/web/views.js         builds each API answer from the database + settings + drive space (read-only)
 src/web/scanRunner.js    Scan now: one run at a time, connected drives only, progress for GET /api/scan
-src/db.js                SQLite schema + migrations, saving scans, re-scoring, pins (writes only in data/)
+src/db.js                SQLite schema + migrations, saving scans, re-scoring, pins, saved settings (writes only in data/)
 src/jobs/scanAndSave.js  one full scan + save, used by `npm run scan` and Scan now
 src/scanner/scan.js      walks the SSD (read-only), collects facts per project
 src/scanner/classify.js  sorts files into raw/proxy/export/cache/project/other
@@ -317,7 +350,7 @@ src/scanner/space.js     drive size/free space via statfs (read-only)
 src/scoring/score.js     the scoring formula + Ready/Review/Keep rule
 src/scoring/plan.js      the move plan (fits on Library? Library full?) and planArchiveMoves (Move 2)
 src/notion/, src/offload/   stubs for Phases 4 and 5
-public/                  the dashboard pages: index.html, project.html, library.html, styles.css,
+public/                  the dashboard pages: index.html, project.html, library.html, settings.html, styles.css,
                          js/common.js + one js/*.js per page
 tests/                   unit tests
 data/                    the only place the app writes: dashboard.db (gitignored)

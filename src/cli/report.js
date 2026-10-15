@@ -10,7 +10,9 @@
 // The database is opened read-only: this command can't change anything.
 
 const { parseArgs } = require('node:util');
-const { loadConfig, ConfigError } = require('../config');
+const { ConfigError } = require('../config');
+// config.json + the changes saved on the dashboard's Settings page.
+const { loadAppConfig } = require('../settings');
 const { allDriveSpace } = require('../scanner/space');
 const { byOffloadOrder } = require('../scoring/score');
 const { planMoves } = require('../scoring/plan');
@@ -36,7 +38,7 @@ async function main(argv) {
     return;
   }
 
-  const { config } = loadConfig();
+  const { config } = loadAppConfig();
   const db = openDatabase({ readonly: true });
   let saved;
   try {

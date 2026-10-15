@@ -62,7 +62,7 @@ function libraryPage() {
 
     archiveText() {
       const { archive } = this.data;
-      if (!archive.configured) return 'No Archive HDD is set up (drives.archive in config.json).';
+      if (!archive.configured) return 'No Archive HDD is set up (add it on the Settings page).';
       if (!archive.connected) return 'The Archive HDD isn\'t connected: plug it in to check it has room.';
       const fits = archive.space.freeBytes >= this.data.plan.movesBytes;
       return `The Archive HDD has ${formatBytes(archive.space.freeBytes)} free${fits ? ' — plenty of room.' : ': not enough room for all of these.'}`;

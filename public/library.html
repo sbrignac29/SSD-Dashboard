@@ -22,6 +22,7 @@
         <nav aria-label="Pages">
           <a href="/">Overview</a>
           <a href="library.html" aria-current="page">Done HDD</a>
+          <a href="settings.html">Settings</a>
         </nav>
         <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
       </div>
@@ -37,7 +38,7 @@
       <template x-if="data && !data.configured">
         <section class="card">
           <h1>Done HDD</h1>
-          <p style="margin-top: 10px">No Library HDD is set up. Add its path as <code>drives.library</code> in config.json.</p>
+          <p style="margin-top: 10px">No Library HDD is set up. Add its path on the <a href="settings.html">Settings</a> page.</p>
         </section>
       </template>
 
@@ -92,8 +93,8 @@
                 Press Scan now on the Overview with the Library plugged in, to see which projects to move.
               </p>
               <p x-show="!data.plan.enough && data.plan.moves.length > 0">
-                Even all of these aren't quite enough: free up a little more space another way, or lower
-                <code>libraryFull.targetPercent</code>.
+                Even all of these aren't quite enough: free up a little more space another way, or raise
+                “Move projects until it’s down to” on the <a href="settings.html">Settings</a> page.
               </p>
               <p class="small" x-text="archiveText()"></p>
               <p class="small muted">Read-only for now: moving projects comes in Phase 5 (with Vericopy's checksums). Copy them with Vericopy yourself until then.</p>
