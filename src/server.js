@@ -24,6 +24,13 @@
 //   GET  /api/settings           the Settings page: every setting, and where its value comes from
 //   POST /api/settings           save changed settings (in data/dashboard.db, never config.json)
 //   POST /api/settings/reset     forget the Settings page's changes: use config.json again
+//   GET  /api/vericopy           is VeriCopy open? (asks its /api/health)
+//   GET  /api/projects/:id/move  the move preview + pre-checks (read-only; nothing starts)
+//   POST /api/projects/:id/move  Start: ask VeriCopy to copy it (only after your click)
+//   GET  /api/moves              the Recent jobs list (?projectId= for one project)
+//   GET  /api/moves/:id          one move, with live progress
+//   POST /api/moves/:id/cancel   ask VeriCopy to cancel it
+//   POST /api/moves/:id/recheck  run the spot check again (after it failed)
 //
 // (":id" is a placeholder: /api/projects/12 runs the same route with id = 12.)
 // Everything else is a file from public/: the pages, their JavaScript and CSS.
@@ -38,18 +45,24 @@
 // links and the Settings page's changes). It only READS Notion
 // (src/notion/sync.js), and only when you press Refresh Notion or Scan now.
 // Starting it never scans or syncs anything; only the Scan now button does.
+// Moves (Phase 5): the server asks VeriCopy (src/offload/) to COPY a project,
+// only after you press Start; VeriCopy does the copying, the dashboard writes
+// nothing on any drive and deletes nothing. When it starts, it resumes
+// following any move that was still running (polling VeriCopy every 2 s).
 
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { ROOT_DIR, loadConfig, assertSafeLocations, notionSettings, ConfigError } = require('./config');
 const { createSettingsStore, loadAppConfig, SettingsError } = require('./settings');
-const { openDatabase, describeDatabaseError, togglePinById, setNotionLinks, displayPath } = require('./db');
+const { openDatabase, describeDatabaseError, togglePinById, setNotionLinks, displayPath, getMove } = require('./db');
 const { allDriveSpace } = require('./scanner/space');
 const { ScanError } = require('./scanner/scan');
 const views = require('./web/views');
 const { createScanRunner } = require('./web/scanRunner');
 const { createNotionSyncer } = require('./notion/sync');
+const { createMover } = require('./offload/moves');
+const { createVericopyClient, VericopyError } = require('./offload/vericopy');
 
 // Express is installed by `npm install`. If it's missing (e.g. right after
 // pulling this update), say so plainly instead of crashing.
@@ -133,6 +146,7 @@ function readLinkRequest(body) {
 //                show up without restarting
 //   notion     – the Notion syncer (notion/sync.js); one is made if not given
 //   getSpaces  – how full each drive is (tests pass fake numbers)
+//   mover      – moves through VeriCopy (offload/moves.js); one is made if not given
 //   localOnly  – turn the localhost guard on (off for phone access)
 function createApp({
   db,
@@ -141,10 +155,12 @@ function createApp({
   getConfig = () => settings.current(),
   notion,
   getSpaces = allDriveSpace,
+  mover,
   localOnly = true,
 }) {
   if (!express) throw new ConfigError(NPM_INSTALL_ADVICE);
   const syncer = notion ?? createNotionSyncer({ db, getConfig });
+  const moves = mover ?? createMover({ db, getConfig, getSpaces, isScanning: () => runner.status().running });
   const app = express();
   app.disable('x-powered-by');
   if (localOnly) app.use(onlyLocalhost);
@@ -253,6 +269,91 @@ function createApp({
   app.post('/api/settings', settingsChange((req) => settings.save(req.body?.values)));
   app.post('/api/settings/reset', settingsChange(() => settings.reset()));
 
+  // --- Moves (Phase 5) ---
+
+  // Moves change things, so with phone access on (server.host 0.0.0.0) only
+  // this Mac can start or cancel one; other devices can watch.
+  function refuseFromOtherDevices(req, res) {
+    if (localOnly || fromThisMac(req)) return false;
+    res.status(403).json({ error: 'Moves can only be started or cancelled on the Mac running the dashboard.' });
+    return true;
+  }
+
+  app.get('/api/vericopy', async (req, res) => {
+    const client = createVericopyClient({ url: getConfig().vericopy.url });
+    try {
+      const health = await client.health();
+      res.json({ url: client.url, running: health.ok, version: health.version, busy: health.queueActive, message: null });
+    } catch (error) {
+      if (!(error instanceof VericopyError)) throw error;
+      res.json({
+        url: client.url,
+        running: false,
+        version: null,
+        busy: false,
+        message: `VeriCopy isn't open: nothing answered at ${client.url}. Open VeriCopy to move projects.`,
+      });
+    }
+  });
+
+  app.get('/api/projects/:id/move', async (req, res) => {
+    const answer = await moves.preview(readId(req.params.id));
+    if (!answer.found) throw new views.RequestError(404, "There's no project with that id.");
+    res.json({ ...answer, canEdit: localOnly || fromThisMac(req) });
+  });
+
+  app.post('/api/projects/:id/move', async (req, res) => {
+    if (refuseFromOtherDevices(req, res)) return;
+    // The click itself: the page sends { confirm: true }. Nothing starts without it.
+    if (req.body?.confirm !== true) {
+      throw new views.RequestError(400, 'Send { "confirm": true } to start a move (the Start button does).');
+    }
+    const outcome = await moves.start(readId(req.params.id));
+    const move = outcome.move ? views.moveView(outcome.move) : null;
+    if (outcome.started) {
+      res.status(202).json({ started: true, message: 'VeriCopy accepted the copy.', move });
+      return;
+    }
+    // Not started: a pre-check failed, VeriCopy said no, or a scan is running.
+    // 409 = "conflict": the request was fine, but things aren't ready for it.
+    res.status(outcome.reason === 'not-found' ? 404 : 409).json({
+      started: false,
+      reason: outcome.reason,
+      code: outcome.code ?? null,
+      error: outcome.message,
+      preview: outcome.preview ?? null,
+      move,
+    });
+  });
+
+  app.get('/api/moves', (req, res) => {
+    const projectId = req.query.projectId === undefined ? null : readId(String(req.query.projectId));
+    res.json(views.movesView({ db, status: moves.status(), projectId }));
+  });
+
+  app.get('/api/moves/:id', (req, res) => {
+    const move = getMove(db, readId(req.params.id));
+    if (!move) throw new views.RequestError(404, "There's no move with that id.");
+    res.json({ move: views.moveView(move), vericopy: moves.status().vericopy });
+  });
+
+  function moveAction(action) {
+    return async (req, res) => {
+      if (refuseFromOtherDevices(req, res)) return;
+      const outcome = await action(readId(req.params.id));
+      const status = outcome.ok ? 200 : outcome.reason === 'not-found' ? 404 : 409;
+      res.status(status).json({
+        ok: outcome.ok,
+        reason: outcome.reason ?? null,
+        message: outcome.message,
+        error: outcome.ok ? undefined : outcome.message,
+        move: outcome.move ? views.moveView(outcome.move) : null,
+      });
+    };
+  }
+  app.post('/api/moves/:id/cancel', moveAction((id) => moves.cancel(id)));
+  app.post('/api/moves/:id/recheck', moveAction((id) => moves.recheck(id)));
+
   app.get('/vendor/:file', (req, res, next) => {
     const file = VENDOR_FILES.get(req.params.file);
     if (!file) return next();
@@ -317,9 +418,12 @@ function main() {
   // Reads Notion only when asked (Refresh Notion, or Scan now).
   const notion = createNotionSyncer({ db, getConfig });
   const runner = createScanRunner({ db, getConfig, notion });
+  // Moves: follows any move that was still running when the dashboard last
+  // stopped (asks VeriCopy every 2 s while one runs; nothing else).
+  const mover = createMover({ db, getConfig, isScanning: () => runner.status().running });
   // Port and host only come from config.json (the Settings page shows them, read-only).
   const { port, host } = config.server;
-  const app = createApp({ db, runner, settings, notion, localOnly: isLoopback(host) });
+  const app = createApp({ db, runner, settings, notion, mover, localOnly: isLoopback(host) });
   const server = http.createServer(app);
 
   server.on('error', (error) => {
@@ -348,7 +452,9 @@ function main() {
         ? '  Notion: read when you press "Refresh Notion" or "Scan now" (never on its own).'
         : '  Notion: not connected (no notion.token in config.json yet; see the README).',
     );
+    console.log(`  Moves: through VeriCopy at ${config.vericopy.url} (copies only; nothing is deleted).`);
     console.log(`  Settings: ${source} · Database: ${displayPath()}`);
+    mover.startPolling();
     console.log('  Press Ctrl+C to stop.');
   });
 
@@ -360,6 +466,7 @@ function main() {
     if (stopping) return;
     stopping = true;
     console.log('\nStopping the dashboard…');
+    mover.stopPolling();
     server.close();
     server.closeAllConnections();
     db.close();

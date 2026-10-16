@@ -209,3 +209,91 @@ test('the Notion guard catches calls that would change Notion', () => {
   assert.deepEqual(notionCalls("client.dataSources.query({ data_source_id: id })"), ['dataSources.query']);
   assert.deepEqual(notionCalls('const all = [...pages.map((p) => p.title)]'), [], 'a spread list is not Notion');
 });
+
+// --- Outgoing HTTP: only VeriCopy, only on 127.0.0.1 --------------------------
+//
+// Phase 5: the dashboard asks VeriCopy to copy. The only code that may send a
+// request to another program is src/offload/vericopy.js (which only talks to
+// http://127.0.0.1:<port>, only on four routes: tests/vericopy.test.js runs
+// those rules). Notion's library (src/notion/sync.js) reaches api.notion.com
+// on its own, read-only, and is guarded above.
+//
+// Everywhere else in src/: no fetch(), no network modules, and node:http only
+// for running the dashboard's own server (createServer).
+
+const NETWORK_MODULES = ['https', 'net', 'tls', 'dgram', 'http2', 'undici', 'axios', 'got', 'node-fetch', 'ws'];
+const CLIENT_FILE = path.join('offload', 'vericopy.js');
+
+function networkProblems(code, relative) {
+  const problems = [];
+  const lines = stripComments(code).split('\n');
+  lines.forEach((line, index) => {
+    const where = `line ${index + 1}`;
+    for (const m of line.matchAll(new RegExp(`(require\\s*\\(|from\\s+|import\\s*\\()\\s*['"\`](node:)?(${NETWORK_MODULES.join('|')})['"\`]`, 'g'))) {
+      problems.push(`${where}: loads ${m[3]}`);
+    }
+    if (/\bfetch\s*\(/.test(line)) problems.push(`${where}: fetch(`);
+    if (/\b(XMLHttpRequest|WebSocket|EventSource)\b/.test(line)) problems.push(`${where}: browser-style network call`);
+    if (relative === CLIENT_FILE) return;
+    // node:http: only the server's own createServer, nothing that sends.
+    for (const m of line.matchAll(/\bhttp\s*\.\s*(\w+)/g)) {
+      if (m[1] !== 'createServer') problems.push(`${where}: http.${m[1]}`);
+    }
+    if (/\{[^}]*\b(request|get)\b[^}]*\}\s*=\s*require\s*\(\s*['"`](node:)?http['"`]/.test(line)) {
+      problems.push(`${where}: takes request/get from node:http`);
+    }
+  });
+  return problems;
+}
+
+test('only src/offload/vericopy.js sends HTTP requests (to VeriCopy on 127.0.0.1)', () => {
+  const problems = [];
+  for (const file of listCodeFiles(SRC_DIR)) {
+    const relative = path.relative(SRC_DIR, file);
+    problems.push(...networkProblems(fs.readFileSync(file, 'utf8'), relative).map((p) => `${relative} ${p}`));
+  }
+  assert.deepEqual(problems, [], `Outgoing network code outside the VeriCopy client:\n${problems.join('\n')}`);
+
+  // The client itself: one place sends, always to 127.0.0.1, and the address
+  // is checked by config.js → vericopyAddress before any request.
+  const client = stripComments(fs.readFileSync(path.join(SRC_DIR, CLIENT_FILE), 'utf8'));
+  assert.equal((client.match(/\bhttpRequest\s*\(/g) ?? []).length, 1, 'exactly one place sends a request');
+  assert.match(client, /host:\s*'127\.0\.0\.1'/);
+  assert.match(client, /vericopyAddress\(url\)/);
+  // The headers object it builds, and anything added to it later, never name Origin.
+  const headers = client.match(/const headers = \{[^}]*\}/)?.[0];
+  assert.ok(headers, 'the headers are built in one place');
+  assert.doesNotMatch(headers, /origin/i, 'never sets an Origin header');
+  assert.doesNotMatch(client, /headers\s*\[\s*['"`]origin/i, 'never adds an Origin header');
+});
+
+test('the network guard catches requests to other places', () => {
+  const sneaky = [
+    "await fetch('https://example.com')",
+    "const https = require('node:https')",
+    "http.request({ host: 'example.com' })",
+    "http.get('http://10.0.0.1/')",
+    "const { request } = require('node:http')",
+    "import got from 'got'",
+    'new WebSocket(url)',
+  ];
+  for (const code of sneaky) assert.notDeepEqual(networkProblems(code, 'web/views.js'), [], `should have been caught: ${code}`);
+  assert.deepEqual(networkProblems('const server = http.createServer(app)', 'server.js'), []);
+});
+
+test("the browser pages never talk to VeriCopy (only the server does)", () => {
+  const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+  const problems = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else if (/\.(js|html)$/.test(entry.name)) {
+        const text = fs.readFileSync(abs, 'utf8');
+        if (/127\.0\.0\.1|:8787|\/api\/jobs|\/api\/health|localhost:/.test(text)) problems.push(path.relative(PUBLIC_DIR, abs));
+      }
+    }
+  };
+  walk(PUBLIC_DIR);
+  assert.deepEqual(problems, [], 'browser code must only call the dashboard\'s own /api/ routes');
+});

@@ -25,20 +25,25 @@ so `npm run report` shows them instantly without rescanning, and
 <http://localhost:7744>. One **Scan now** button, plain-language tags, your
 drives (plugged in or not), each project's score explained, and the Done HDD
 page with the Library → Archive list for Move 2. See section 4.
-**Phase 4 (now):** your Notion **Projects** board: a project marked **Done**
+**Phase 4 (done):** your Notion **Projects** board: a project marked **Done**
 there counts as finished. You link each folder to its Notion page once (the app
 suggests, you confirm), and the Status column shows its Notion status. The app
 only reads Notion. See section 5.
-**Next:** moving projects with Vericopy (Phase 5).
+**Phase 5A (now):** **Move to HDD** / **Move to Archive**: the dashboard asks
+your VeriCopy app to copy a project to the next drive and verify every file,
+then counts the copy itself. Nothing is deleted: the original stays where it
+is. See section 6.
+**Next:** removing the original after a verified copy (Phase 5B, only when you ask).
 
 > **Safety promise.** This app only ever *reads* your drives. It never deletes,
 > moves, renames, or writes anything on the Working SSD, the Library, or the
 > Archive. The only folder it writes to is its own `data/` folder (where the
 > database lives). A test
 > (`tests/safety.test.js`) fails if code that can change files ever sneaks into
-> the app. Moving projects stays your job (with Vericopy) until you ask for
-> that feature. The dashboard is read-only too: its "Move to HDD" button is
-> greyed out ("Coming in Phase 5"), and nothing scans until you press
+> the app. **Copying is VeriCopy's job:** when you press **Start copy**, the
+> dashboard asks VeriCopy (on this Mac only, `http://127.0.0.1:8787`) to copy
+> the project; VeriCopy never overwrites anything and has no way to delete.
+> Nothing is deleted anywhere in this phase. Nothing scans until you press
 > **Scan now**.
 
 ---
@@ -135,8 +140,9 @@ SSD Offload Dashboard is running.
 Keep that Terminal window open while you use the dashboard; **Ctrl+C** stops
 it. Starting it never scans anything: the page shows what the last scan saved
 (including scans from `npm run scan`) until you press **Scan now**. (7744 is
-the "port", like a door number on your Mac. Vericopy uses 7743, so the
-dashboard uses the next one.)
+the "port", like a door number on your Mac. VeriCopy answers on 8787.) If a
+move was still copying when you stopped the dashboard, starting it again picks
+that move back up (section 6).
 
 ### The Overview page
 
@@ -193,7 +199,10 @@ From top to bottom:
   **Size by file type**, and the **folder tree**:
   its folders, biggest first, three levels deep (click a folder to open it).
 - **Pin as Keep** / **Unpin** — the same as `npm run pin` (only the database
-  changes). **Move to HDD** is greyed out: *Coming in Phase 5*.
+  changes).
+- **Move to HDD…** (or **Move to Archive…** for a Library project) — a preview
+  and the pre-checks; **Start copy** asks VeriCopy to copy it. Its moves show
+  below, live while one runs. Section 6.
 
 ### The Done HDD page
 
@@ -204,14 +213,21 @@ Archive HDD, enough to bring it back down to `libraryFull.targetPercent` (70%),
 and whether the Archive has room. (Want it to stop just under the limit
 instead? Set `targetPercent` to e.g. 85.) If the Library is under the limit but
 the projects ready on the SSD would push it past, the banner lists what to move
-first to make room. It's a list only: copy them with Vericopy yourself until
-Phase 5.
+first to make room. Each one has **Move to Archive…** (its project page,
+section 6).
+
+### The Moves page
+
+**Recent jobs**: every move you started, newest first, with live progress for
+the running ones (copying %, verifying %, time left), a **Cancel** button, and
+what happened to the others. It comes from the dashboard's database, so it
+survives VeriCopy quitting.
 
 ### The Settings page
 
 Change the drive paths, the Done HDD limits, the scoring numbers, the folder
 lists and the file types without opening `config.json`.
-Section 11 explains how it works.
+Section 12 explains how it works.
 
 ### When a drive is unplugged
 
@@ -482,7 +498,199 @@ it's fixed.
 A page deleted in Notion (or no longer shared) keeps its last status on the
 linked project, and the project page says it wasn't in the last sync.
 
-## 6. Run a scan from Terminal
+## 6. Moving projects with VeriCopy (Phase 5A)
+
+The two moves of your workflow, done from the dashboard:
+
+- **Move 1 — Move to HDD:** Working SSD → Library HDD, for projects tagged
+  **Ready to move to HDD**.
+- **Move 2 — Move to Archive:** Library HDD → Archive HDD, for the projects the
+  Done HDD page suggests (oldest first, once the Library passes 90%).
+
+In this phase a "move" is a **verified copy**: the original stays where it
+was. Nothing is deleted anywhere. (Removing the original comes later, only when
+you ask for it.) Shared folders are never moved.
+
+### Who does what
+
+The dashboard never copies anything itself. It asks **VeriCopy**, your Mac app,
+which copies the folder and then reads every file back off the destination
+drive and compares its **checksum** (a fingerprint of the file's bytes) with
+the original's. VeriCopy has a small API (see its `API.md`) at
+`http://127.0.0.1:8787` while it's open:
+
+- The dashboard is VeriCopy's **HTTP client**: its server (never the browser
+  page) sends VeriCopy requests and reads the answers. Only four:
+  `GET /api/health` (are you open?), `POST /api/jobs` (copy this),
+  `GET /api/jobs/<id>` (how's it going?) and `POST /api/jobs/<id>/cancel`.
+- It only talks to `127.0.0.1` (this Mac) — `vericopy.url` can't be set to
+  anything else — and never sends an `Origin` header (VeriCopy refuses requests
+  that carry one, because web pages' requests do). Tests check both.
+- VeriCopy never overwrites: if the folder is already at the destination, it
+  refuses (`destination_exists`).
+
+The drives are laid out alike, so a project keeps its path: the SSD's
+`NCHS Football/Week 1` lands at `/Volumes/BRIGSMEDIA LIBRARY/NCHS Football/Week 1`.
+VeriCopy copies a folder *into* a destination folder, so the dashboard gives it
+the **parent** (`/Volumes/BRIGSMEDIA LIBRARY/NCHS Football`), which must
+already exist.
+
+### Step 1: the preview and pre-checks (nothing starts)
+
+Open a project's page and press **Move to HDD…** (or **Move to Archive…**). You
+see where it goes (from, to), its size and file count (counted now, live), and
+how much space the destination will have left. Then the checks, each with what
+to do if it fails:
+
+| Check | Fails when | What to do |
+|---|---|---|
+| Can be moved | not Ready (Move 1) / not suggested (Move 2), a shared folder, or already copied there | — |
+| VeriCopy is open | nothing answers at `vericopy.url` | Open VeriCopy (and check Settings ▸ API is on). **Start copy** stays disabled |
+| Both drives connected | a drive is unplugged, or `/Volumes/<name>` is an empty leftover folder (macOS leaves one after an unclean eject) | Plug the drive in |
+| Project folder found | it's gone, unreadable, or empty | Press Scan now |
+| Destination folder exists | e.g. `NCHS Football` isn't on the Library yet | Create it **yourself in Finder** (File ▸ New Folder), exactly as named. The dashboard never creates folders |
+| Not already at the destination | a folder with the project's name is already there | It may be a leftover partial copy from a failed or cancelled move: look at it in Finder, delete it yourself if it is, then Check again |
+| Enough free space | free space < the project's size + 10% | Make room first |
+| Not changed in the last 10 minutes | a file in it changed recently | Finish exporting/saving and wait |
+| Not open in an editing app | (a reminder; a warning if Premiere's `.prlock` lock file is there) | Close the project in Resolve and Premiere |
+
+Press **Check again** after fixing something. **Start copy** is the only button
+that starts anything, and the server runs every check again before it does.
+
+### Step 2: Start copy, and watching it
+
+When you press **Start copy**, the dashboard first saves the move in the
+database (`archive_log`), then asks VeriCopy, and saves VeriCopy's **job id**
+straight away. VeriCopy forgets its jobs when it quits; the dashboard doesn't.
+
+Then it **polls**: every 2 seconds it asks VeriCopy how the job is doing and
+saves the answer. The project page and the **Moves** page (Recent jobs) show it
+live: copying %, verifying %, time left. A **Cancel** button asks VeriCopy to
+stop. Closing the browser doesn't matter (the server keeps following the job),
+and if you stop the dashboard (Ctrl+C) mid-copy, the next `npm start` picks the
+job up again.
+
+### Step 3: the spot check, and what each result means
+
+When VeriCopy says **verified** (every file's checksum matched), the dashboard
+checks the copy itself, read-only: the destination folder must have the **same
+number of files and the same total bytes** as the original. Only then does the
+move read **"Copied to HDD, original still on SSD"** (or "Copied to Archive,
+original still on the Library HDD"). A rule in the database makes "copied"
+impossible to save otherwise.
+
+`.DS_Store` and `._` files are left out of that count, on both sides, and
+counted separately. Finder writes a `.DS_Store` into any folder you merely look
+at (so peeking at the half-copied folder would make a perfect copy look wrong),
+and a Mac writing to a non-Mac drive format (exFAT) adds a `._` file next to
+files to hold Mac extras. Neither contains your media, and VeriCopy's checksums
+already covered every file it copied. Every other file counts, hidden or not.
+
+| Result | Meaning | What to do |
+|---|---|---|
+| Copied to HDD, original still on SSD | verified + spot check passed | Nothing. (The Overview still lists it until removing originals exists) |
+| Verified, but the spot check failed | the counts differ: e.g. the original changed during the copy, or a drive was unplugged | Compare the folders in Finder (Get Info). **Check the copy again** after replugging; if the original changed, delete the copy in Finder and move it again |
+| Copy failed | VeriCopy reports failed files (listed) or couldn't start (`fatalError`) | Files already copied **stay at the destination**: delete that partial folder in Finder before trying again |
+| Cancelled | you (or VeriCopy's window) cancelled it | Same: delete the partial folder in Finder first |
+| Lost: copy state unknown | VeriCopy was quit or restarted (`job_not_found`): nobody knows how far it got. Never counted as verified | Check the destination folder in Finder; delete a partial copy before trying again |
+| Not started: VeriCopy refused | e.g. `destination_exists`, `path_not_found` (drive unplugged), `path_not_allowed` | The message says what to fix. `path_not_allowed`: add the drive to `allowedRoots` in VeriCopy's `api-config.json` |
+
+### Your first run, step by step
+
+Do this once with a test folder before touching real projects. It uses
+`~/VeriCopyAPITest`, which VeriCopy's `api-config.json` already allows.
+
+**A. Try VeriCopy on its own** (Terminal, with VeriCopy open):
+
+```bash
+curl -s http://127.0.0.1:8787/api/health
+```
+
+You should see `{"ok":true,...}`. (Nothing? Open VeriCopy and check Settings ▸ API.)
+
+**B. A test copy of the dashboard, pointed at test "drives".** A second copy
+of the app with its own settings and its own database, so your real database
+never sees the test folders:
+
+```bash
+mkdir -p ~/VeriCopyAPITest/ssd/"Test Shoot"/{Footage,Exports} ~/VeriCopyAPITest/library ~/VeriCopyAPITest/archive
+head -c 50000000 /dev/urandom > ~/VeriCopyAPITest/ssd/"Test Shoot"/Footage/A001.mov
+head -c 5000000 /dev/urandom > ~/VeriCopyAPITest/ssd/"Test Shoot"/Exports/"Highlights FD.mp4"
+# Make it look finished a while ago (Ready needs 14 untouched days):
+find ~/VeriCopyAPITest/ssd -exec touch -t 202609011200 {} +
+
+cd ~/Code   # or wherever you keep projects (NOT inside ~/VeriCopyAPITest)
+git clone https://github.com/sbrignac29/SSD-Dashboard.git SSD-Dashboard-test
+cd SSD-Dashboard-test
+git checkout claude/phase-5a-vericopy-moves-il2low   # (or main, once merged)
+npm install
+echo $HOME   # prints your home folder, e.g. /Users/spencerbrignac
+```
+
+Create `config.json` in `SSD-Dashboard-test` (use your home folder from
+`echo $HOME`; JSON doesn't understand `~`):
+
+```json
+{
+  "drives": {
+    "working": "/Users/spencerbrignac/VeriCopyAPITest/ssd",
+    "library": "/Users/spencerbrignac/VeriCopyAPITest/library",
+    "archive": "/Users/spencerbrignac/VeriCopyAPITest/archive"
+  },
+  "server": { "port": 7745 }
+}
+```
+
+Then `npm start` there and open <http://localhost:7745> (a different port, so
+it can run next to your real dashboard).
+
+**C. Move the test project.**
+
+1. **Scan now.** "Test Shoot" should be **Ready to move to HDD**.
+2. Open it, press **Move to HDD…**. Every check should be ✓ (the editing-app
+   one is just a reminder). From: `…/ssd/Test Shoot`, To: `…/library/Test Shoot`.
+3. Press **Start copy**. Watch Copying → Verifying → "Copied to HDD, original
+   still on SSD". The **Moves** page shows the same job.
+4. In Terminal, confirm the copy is identical (prints `IDENTICAL`):
+   `diff -r ~/VeriCopyAPITest/ssd/"Test Shoot" ~/VeriCopyAPITest/library/"Test Shoot" && echo IDENTICAL`
+5. Press **Move to HDD…** again: it now says it's already copied and that the
+   folder already exists. Nothing starts.
+
+**D. Try the things that go wrong** (optional, but it's the point of a test):
+
+- **Missing destination folder:** in Terminal,
+  `mkdir -p ~/VeriCopyAPITest/ssd/"NCHS Football"/"Week 1"/Exports`, add a file
+  as above (`head -c … > …/Week 1/Exports/"Week 1 FD.mp4"`), `touch -t` it,
+  add `"folders": { "containers": ["NCHS Football"] }` to the test
+  `config.json`, Scan now, and press **Move to HDD…** on "NCHS Football / Week 1":
+  it tells you to create "NCHS Football" in Finder. Do that, press Check again.
+- **Cancel:** make a big file (`head -c 5000000000 /dev/urandom > …`), Scan now,
+  start its move, and press **Cancel** while it copies. Then delete the partial
+  folder in `library` in Finder, as the message says.
+- **VeriCopy quits mid-copy:** start a big copy, quit VeriCopy, open it again.
+  Within a few seconds the move reads "Lost: copy state unknown".
+
+**E. One small real project, SSD → Library.** Back in your real dashboard
+(`npm start` in the real app folder, <http://localhost:7744>), with both
+drives plugged in and VeriCopy open:
+
+1. **Scan now**, then pick the **smallest** project tagged Ready (sort the table
+   by Size).
+2. If it's inside a container (e.g. NCHS Football), make sure that folder
+   exists on the Library first (the check tells you).
+3. **Move to HDD…** → read every line → **Start copy**. Leave it until it reads
+   "Copied to HDD, original still on SSD".
+4. Look at it on the Library in Finder (Get Info: size and item count). The
+   original is still on the SSD; the Overview still lists it as Ready (removing
+   the original comes later).
+
+**F. Clean up afterwards.** Remove the `"/Users/spencerbrignac/VeriCopyAPITest"`
+line from VeriCopy's `~/Library/Application Support/VeriCopy/api-config.json`
+(mind the comma on the line before it), press **Reload Config** in VeriCopy ▸
+Settings ▸ API, then delete the test folders:
+`rm -rf ~/VeriCopyAPITest ~/Code/SSD-Dashboard-test`.
+
+## 7. Run a scan from Terminal
 
 ```
 npm run scan
@@ -501,7 +709,7 @@ All the commands:
 | `npm run scan` | Scan the Working SSD, save to the database, and print the ranked table, drive space, and move plan |
 | `npm run scan:details` | Same, plus per project: size by type, the newest file, the project-file save date, which export counted, and the score math |
 | `npm run report` | Print the saved results from the database, **without scanning**. Instant, and works with the SSD unplugged |
-| `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 9) |
+| `npm run pin -- "Project name"` | Pin a project as Keep, or unpin it (see section 10) |
 | `npm run pin` | List the pinned projects |
 | `npm run scan -- --root "/Volumes/BRIGSMEDIA/NCHS Football"` | Scan just one folder of shoots (its subfolders are treated as projects) as a quick preview. Use it on a container like `NCHS Football` or on a whole drive — pointed at a single project folder, it would list that project's Footage/Exports subfolders as if they were separate projects. **Not saved**: it only sees part of the SSD, and saving it would mark everything else as missing. Your config lists and pins still apply, but Size is compared only within that folder, so scores can run higher — decide what to move from a full `npm run scan` |
 | `npm run scan -- --root "/Volumes/BRIGSMEDIA LIBRARY"` | Peek at what's on the Library. **Not saved** (its buckets still describe Move 1). The dashboard's Scan now saves the Library properly, for the Done HDD page |
@@ -522,7 +730,7 @@ that fails (SSD not plugged in) is recorded as failed and changes nothing else.
 **Nothing scans on its own.** The database updates only when you press Scan now
 or run `npm run scan`.
 
-## 7. Reading the report
+## 8. Reading the report
 
 **Projects table** — Ready projects first (biggest first, because moving those
 frees the most space), then Review, then Keep (highest score first):
@@ -531,8 +739,8 @@ frees the most space), then Review, then Keep (highest score first):
 |---|---|
 | Size (GB) | Total size of the project folder, in the same units Finder uses |
 | Last edited | Date of the newest file in the project (hidden system files like `.DS_Store` don't count — Finder rewrites those just from browsing) |
-| Export | **final** — the project is finished: there's a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`) or saved in a final-exports folder (`Final Exports/`, `Exports/FD/`). **draft** — there are exports, but none that say final, so it may still be in revisions. **no** — no exports found. See section 8 for the details |
-| Score | 0–100: how good a candidate it is (see section 8). Orders Review and Keep |
+| Export | **final** — the project is finished: there's a video export named with **"Final" or "FD"** (e.g. `Soccer 8-24 FD.mp4`, `Promo FINALv2.mov`) or saved in a final-exports folder (`Final Exports/`, `Exports/FD/`). **draft** — there are exports, but none that say final, so it may still be in revisions. **no** — no exports found. See section 9 for the details |
+| Score | 0–100: how good a candidate it is (see section 9). Orders Review and Keep |
 | Bucket | **Ready** — finished (final export) and untouched for 14+ days: move it to the Library. **Review** — finished but not safe to move yet (see Notes), or unfinished but old and big. **Keep** — unfinished, or pinned |
 
 Below the table:
@@ -568,7 +776,7 @@ Its Drives and Move plan sections use how full the drives are right now, with
 the Ready projects from the last scan. It doesn't list loose files or skipped
 items (those aren't saved); run `npm run scan` for those.
 
-## 8. When is a project Ready?
+## 9. When is a project Ready?
 
 **Ready = finished + untouched for 14 days + nothing uncertain.**
 
@@ -632,7 +840,7 @@ Example: final export (70), last edited 67 days ago (halfway from 14 to 120 →
 `0.45×70 + 0.35×50 + 0.20×50 = 31.5 + 17.5 + 10 = 59` — and it's **Ready**,
 because it's finished and untouched for 14+ days.
 
-## 9. Pinning projects (always Keep)
+## 10. Pinning projects (always Keep)
 
 Some projects should stay on the Working SSD however finished they look: a
 client who comes back for re-edits, your reel, a template project. Pin them:
@@ -668,7 +876,7 @@ the case.
 **Renamed a pinned folder?** A rename looks like a new project to the app (the
 old name is marked missing), so pin it again under its new name.
 
-## 10. The database: open it yourself
+## 11. The database: open it yourself
 
 All saved results live in one file: **`data/dashboard.db`** inside the app
 folder (e.g. `~/Code/SSD-Dashboard/data/dashboard.db`). It's an **SQLite**
@@ -807,11 +1015,22 @@ longer shared). Rows are never deleted, so links keep their page.
 (`button` or `scan`), `data_source_id`, `page_count`, and `error` (why it
 failed, in plain words).
 
-**`archive_log`**: empty for now. When moving projects arrives (Phase 5) it
-gets one row per move: `archived_at`, `project_id` (points at the `projects`
-row), `project_path`, `destination_drive` (`library` or `archive`),
-`size_bytes`, `checksum_result`. Together, those rows are each project's trail
-(SSD → Library on one date → Archive on another), so you can always find it.
+**`archive_log`**: one row per move (section 6), saved the moment you press
+**Start copy** and updated every 2 seconds while VeriCopy works: `project_id`
+(the `projects` row moved), `project_path`, `project_name`, `from_drive` /
+`to_drive` (`working` → `library`, or `library` → `archive`), `source_path`,
+`destination_parent` (the folder given to VeriCopy), `destination_path` (where
+the copy lands), `vericopy_url`, `job_id` (VeriCopy's), `size_bytes`,
+`file_count`, `state` (see section 6), `vericopy_status`, `status_history` (JSON:
+every change with its time), the progress numbers (`progress`, `bytes_copied`,
+`bytes_total`, `files_total`, `files_copied`, `files_verified`, `files_failed`,
+`seconds_remaining`), `failed_files` and `fatal_error` (from VeriCopy),
+`spot_check` (JSON: both folders' counts) and `spot_check_ok`, `error` (plain
+words), `created_at`, `submitted_at`, `updated_at`, `finished_at`. A rule in
+the database makes `state = 'copied'` impossible unless VeriCopy said
+`verified` and the spot check passed. Together, the rows are each project's
+trail (SSD → Library on one date → Archive on another), so you can always
+find it.
 
 ### Prefer Terminal?
 
@@ -831,7 +1050,7 @@ to leave.
   the next `npm start` or `npm run scan` makes a new one. You lose your pins,
   the scan history, and the "no longer on the Working SSD" list.
 
-## 11. Settings (the Settings page, or `config.json`)
+## 12. Settings (the Settings page, or `config.json`)
 
 **The easy way:** open the dashboard (`npm start`) and click **Settings** in the
 top bar. Each setting has a short explanation and says when it takes effect:
@@ -855,7 +1074,7 @@ How it works, in case you wonder where things go:
   `config.json` and restart `npm start`. If you open the dashboard to your phone
   (`"host": "0.0.0.0"`), the phone can look at the settings but only this Mac
   can change them.
-- Deleting `data/dashboard.db` (section 10) also forgets the Settings page's changes.
+- Deleting `data/dashboard.db` (section 11) also forgets the Settings page's changes.
 
 **In `config.json`:** every setting can also be written there (the app's
 defaults are in `config.example.json`):
@@ -867,7 +1086,8 @@ defaults are in `config.example.json`):
 | `drives.archive` | Your Archive folder (`/Volumes/Expansion/BRIGSMEDIA ARCHIVE`). Use `""` for a drive you don't have |
 | `libraryFull.startAtPercent` | When the Library is this full (90%), it's time to move its oldest projects to the Archive |
 | `libraryFull.targetPercent` | How far down to bring the Library when that happens (70% — change it if you prefer) |
-| `server.port` | The dashboard's address: `http://localhost:7744`. Any number from 1024 to 65535 except 7743 (Vericopy's) |
+| `server.port` | The dashboard's address: `http://localhost:7744`. Any number from 1024 to 65535 except VeriCopy's (8787) |
+| `vericopy.url` | Where VeriCopy answers: `http://127.0.0.1:8787`. Must be `http://127.0.0.1:` and a port (not `localhost`, not another computer). Also on the Settings page |
 | `server.host` | `"127.0.0.1"`: only this Mac can open the dashboard (recommended). `"0.0.0.0"`: your phone on the same Wi-Fi too (section 4) |
 | `ageDays.recent` / `ageDays.max` | The 14-day "still being worked on" window and the 120-day "fully old" point |
 | `weights` | The 0.45 / 0.35 / 0.20 mix. Must add up to 1 |
@@ -879,7 +1099,7 @@ defaults are in `config.example.json`):
 | `folders.ignore` | Top-level folders to skip completely |
 | `folders.shared` | Folders used across projects: measured, never ranked |
 | `folders.containers` | Folders that hold many shoots (like `NCHS Football`). Each subfolder becomes its own project |
-| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 9) |
+| `folders.keepPinned` | Projects that must always stay (bucket = Keep). Pinning a container (e.g. `"NCHS Football"`) keeps every shoot inside it. For single projects, `npm run pin` is easier (section 10) |
 | `fileTypes.finalExportWords` | Words in an export's name (or its folder's) that mean "final" (`final`, `fd`) |
 | `fileTypes.notFinalWords` | Words that mean "not final" even if Final/FD is there too (`draft`, `rough`, `wip`) |
 | `fileTypes.*` (the rest) | The extensions and folder words used to sort files into raw / proxy / export / cache / project |
@@ -904,7 +1124,7 @@ show up when you refresh (scores after the next Scan now). `server.port` and
 Settings page wins over `config.json`: if an edit there seems to do nothing, the
 Settings page shows that setting as **Changed here**.
 
-## 12. Checking the numbers against Finder
+## 13. Checking the numbers against Finder
 
 Run `npm run scan:details`, pick a project, and compare:
 
@@ -947,7 +1167,7 @@ TB/GB).
 If something looks wrong, note the project name and what Finder says, and we'll
 adjust the rules.
 
-## 13. Naming exports and where to save things
+## 14. Naming exports and where to save things
 
 You **don't need to rename project folders** — folder names don't change scores.
 What matters:
@@ -983,7 +1203,7 @@ media links break. And if you rename a folder that's listed in `config.json`
 (shared, containers, pinned...), update the name there too; the scan warns you
 about names it can't find.
 
-## 14. Run the tests
+## 15. Run the tests
 
 ```
 npm test
@@ -1008,7 +1228,7 @@ the real one, so they never touch your real board or need internet.
 The database tests use their own throwaway database inside `data/`; they never
 touch your real `data/dashboard.db`.
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 - **"Can't find /Volumes/BRIGSMEDIA. Is the drive plugged in?"** — plug it in,
   or run `ls /Volumes` and fix `drives.working` in `config.json`.
@@ -1084,7 +1304,7 @@ touch your real `data/dashboard.db`.
   anything Resolve-based. (A later phase can read the library's per-project
   save dates.)
 - **Exports and project files saved outside the project folder** aren't linked
-  to their project. See section 13.
+  to their project. See section 14.
 - **A final-looking name isn't proof.** The app ignores "Final" that comes from
   the project's own name, but a draft named, say, `State Final Recap v1.mp4` in
   a project called `NCHS Basketball` would still look final. That's why the
@@ -1105,6 +1325,16 @@ touch your real `data/dashboard.db`.
 - **One Working SSD per database.** Projects are tracked by their path from the
   top of the drive. If you point `drives.working` at a different drive, the
   first drive's projects show as no longer on the SSD.
+- **A moved project still shows on the SSD.** This phase only copies: the
+  original stays, so the Overview still lists it as Ready (its page and the
+  Moves page say "Copied to HDD, original still on SSD"). Removing the original
+  comes in Phase 5B.
+- **The dashboard can't see which apps are running.** Checking for Resolve or
+  Premiere would mean running another program (`ps`), which the safety rules
+  forbid. It warns when it finds Premiere's `.prlock` file, and the 10-minute
+  check and the spot check catch files that change during a copy.
+- **A Library scan during a copy** sees the half-copied folder and saves it as a
+  Library project until the next Library scan. Scan after moves finish.
 - **Settings changes apply at the next scan.** `npm run report` and the
   dashboard show the scores saved by the last scan (a project's page says when
   your settings would change its score), so after editing `config.json` (weights,
@@ -1135,12 +1365,14 @@ src/scoring/score.js     the scoring formula and the Ready/Review/Keep rule
 src/scoring/plan.js      the move plan: will it fit, is the Library full, what to move to the Archive
 src/notion/sync.js       reads your Notion Projects board (read-only) and saves what it says
 src/notion/match.js      suggests which Notion page belongs to which folder
-src/offload/             Phase 5 (a stub)
+src/offload/vericopy.js  talks to VeriCopy (127.0.0.1 only, four routes, never an Origin header)
+src/offload/moves.js     moves: preview + pre-checks, Start, following the job, the spot check
+src/offload/measure.js   counts a folder's files and bytes (read-only), for moves
 public/                  the dashboard pages: index.html (Overview), project.html, library.html (Done HDD),
-                         notion.html (Link to Notion),
+                         notion.html (Link to Notion), moves.html (Moves: Recent jobs),
                          settings.html (Settings),
                          styles.css, and js/ (the code that runs in your browser)
-tests/                   automated tests
+tests/                   automated tests (fakeNotion.js and fakeVericopy.js: fakes, never the real services)
 data/                    the only folder the app writes to: dashboard.db (not uploaded to GitHub)
 ```
 
@@ -1173,7 +1405,8 @@ data/                    the only folder the app writes to: dashboard.db (not up
 - **Alpine.js** — a small library that fills the page with data and makes its
   buttons work, written right in the HTML (`x-text="..."`, `@click="..."`).
 - **Polling** — asking again and again ("is the scan done yet?"), here twice a
-  second while a scan runs.
+  second while a scan runs, and every 2 seconds while a move runs (the page
+  asks the dashboard; the dashboard asks VeriCopy).
 - **SQLite** — a complete database stored in one file (`data/dashboard.db`).
 - **Table / row / column** — a table is like one spreadsheet tab: each column
   has a fixed name and type, and each row is one thing (one project, one scan).
@@ -1197,6 +1430,18 @@ data/                    the only folder the app writes to: dashboard.db (not up
   API version 2025-09-03). The app reads rows from your Projects data source.
 - **Pagination** — getting a long list in pieces: Notion sends 100 rows at a
   time, plus a "cursor" saying where the next 100 start.
+- **HTTP client** — the side that ASKS: code that sends a request to another
+  program's server and reads the answer. The dashboard's server is a client
+  of VeriCopy (`src/offload/vericopy.js`).
+- **Job / job states** — one copy VeriCopy runs. It goes `queued` → `copying`
+  → `verifying` → `verified` (or `failed` / `cancelled`). Only `verified`
+  means every file's checksum matched.
+- **Checksum** — a short fingerprint calculated from a file's bytes. VeriCopy
+  calculates it from the original and again from the copy read back off the
+  disk: equal fingerprints mean identical files.
+- **Origin header** — a line every web page's request carries saying which
+  site it came from. VeriCopy refuses any request with one, so a website you
+  visit can't drive your drives; the dashboard's server never sends one.
 - **Fuzzy matching** — comparing names that are similar but not identical. The
   Link to Notion page uses it to suggest pages (section 5).
 
@@ -1208,4 +1453,8 @@ data/                    the only folder the app writes to: dashboard.db (not up
    Library → Archive list (Move 2); Library scans saved
 4. ✅ Notion: read your Projects board, link folders to pages (suggested, you confirm),
    Done in Notion counts as finished, Status column, Refresh Notion
-5. Moving projects through Vericopy + a log of where each project went (only when you ask for it)
+5. Moves through VeriCopy:
+   - ✅ 5A: copy + verify (VeriCopy's checksums + the dashboard's spot check), the
+     move log (`archive_log`), live progress, Recent jobs. Nothing is deleted.
+   - 5B: removing the original after a verified copy, with explicit
+     confirmation (only when you ask for it). Never from the Archive.

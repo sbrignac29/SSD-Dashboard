@@ -12,6 +12,7 @@
       } catch {}
     </script>
     <script src="js/common.js" defer></script>
+    <script src="js/moves.js" defer></script>
     <script src="js/project.js" defer></script>
     <script src="vendor/chart.umd.min.js" defer></script>
     <script src="vendor/alpine.min.js" defer></script>
@@ -23,6 +24,7 @@
         <nav aria-label="Pages">
           <a href="/">Overview</a>
           <a href="library.html">Done HDD</a>
+          <a href="moves.html">Moves</a>
           <a href="notion.html">Link to Notion</a>
           <a href="settings.html">Settings</a>
         </nav>
@@ -92,13 +94,125 @@
                     x-text="data.pin.pinned ? 'Pinned: it stays on the SSD.' : 'Keeps it on the SSD, whatever the score.'"></span>
                 </div>
               </template>
-              <div class="coming-soon">
-                <button type="button" class="button" disabled
-                  x-text="data.project.drive === 'library' ? 'Move to Archive' : 'Move to HDD'"></button>
-                <span class="small muted">Coming in Phase 5</span>
-              </div>
+              <template x-if="movable()">
+                <div class="coming-soon">
+                  <button type="button" class="button" :class="data.scoring && data.scoring.bucket === 'Ready' && !copiedMove() ? 'button-primary' : ''"
+                    @click="openMove()" :disabled="moveLoading || activeMove() !== null || copiedMove() !== null"
+                    x-text="`${data.project.drive === 'library' ? 'Move to Archive' : 'Move to HDD'}…`"></button>
+                  <span class="small muted" x-text="moveButtonNote()"></span>
+                </div>
+              </template>
             </div>
             <p class="small" x-show="pinMessage" x-text="pinMessage" aria-live="polite"></p>
+          </section>
+
+          <!-- Move: preview and pre-checks. Nothing starts until "Start copy". -->
+          <section class="card move-preview" x-show="moveOpen" aria-labelledby="move-title">
+            <div class="card-head">
+              <h2 id="move-title" x-text="preview ? `${preview.buttonLabel}: check before copying` : 'Checking…'"></h2>
+              <button type="button" class="button" @click="closeMove()">Close</button>
+            </div>
+            <p class="muted" x-show="moveLoading">Checking the drives and VeriCopy… (counting the project's files can take a few seconds)</p>
+            <template x-if="preview && !moveLoading">
+              <div style="display: grid; gap: 16px">
+                <dl class="facts">
+                  <dt>From</dt>
+                  <dd><span x-text="preview.fromLabel"></span> <code class="check-detail" style="display: block" x-text="preview.source"></code></dd>
+                  <dt>To</dt>
+                  <dd><span x-text="preview.toLabel"></span> <code class="check-detail" style="display: block" x-text="preview.destinationPath"></code></dd>
+                  <dt>Size</dt>
+                  <dd x-text="preview.sizeBytes === null ? '—' : `${formatBytes(preview.sizeBytes)} · ${plural(preview.fileCount, 'file')}`"></dd>
+                  <dt>Free afterwards</dt>
+                  <dd x-text="preview.freeAfterBytes === null ? '—' : `${formatBytes(preview.freeAfterBytes)} left on the ${preview.toLabel} (${formatBytes(preview.freeBytes)} free now)`"></dd>
+                </dl>
+                <ul class="checks">
+                  <template x-for="c in preview.checks" :key="c.id">
+                    <li class="check" :class="`check-${c.state}`">
+                      <span class="check-mark" role="img" :aria-label="CHECK_WORDS[c.state]" x-text="CHECK_MARKS[c.state]"></span>
+                      <div>
+                        <p x-text="c.label"></p>
+                        <p class="check-detail" x-text="c.message"></p>
+                      </div>
+                    </li>
+                  </template>
+                </ul>
+                <p class="small">
+                  VeriCopy copies the folder and checks every file's checksum; then the dashboard counts the copy's files
+                  and bytes itself. The original stays on the <span x-text="preview.fromLabel"></span>: nothing is deleted.
+                </p>
+                <div class="banner banner-warn" x-show="startError" role="alert"><p x-text="startError"></p></div>
+                <div class="actions">
+                  <button type="button" class="button button-primary" @click="startMove()"
+                    :disabled="!preview.canStart || !preview.canEdit || starting" x-text="starting ? 'Starting…' : 'Start copy'"></button>
+                  <button type="button" class="button" @click="openMove()" :disabled="starting">Check again</button>
+                </div>
+                <p class="small muted" x-show="!preview.canStart">Fix the ✗ items above, then press Check again.</p>
+                <p class="small muted" x-show="!preview.canEdit">Moves can only be started on the Mac running the dashboard.</p>
+              </div>
+            </template>
+          </section>
+
+          <!-- This project's moves, live while one runs -->
+          <section class="card" x-show="moves.length > 0" aria-labelledby="moves-title">
+            <div class="card-head">
+              <h2 id="moves-title">Moves</h2>
+              <a class="small" href="moves.html">All moves →</a>
+            </div>
+            <div class="move-list">
+              <template x-for="m in moves" :key="m.id">
+                  <article class="move-card" :class="`move-${m.tone}`">
+                    <div class="move-head">
+                      <strong x-text="m.label"></strong>
+                      <span class="small muted" x-text="`${m.fromLabel} → ${m.toLabel} · started ${formatDateTime(m.createdAt)}`"></span>
+                    </div>
+                    <p class="check-detail">To <code x-text="m.destinationPath"></code></p>
+                    <template x-if="m.active">
+                      <div class="move-progress">
+                        <div class="progress" role="progressbar" aria-label="Copy progress" aria-valuemin="0" aria-valuemax="100"
+                          :aria-valuenow="Math.round(m.progress.overallPercent ?? 0)">
+                          <div class="progress-fill" :style="`width: ${Math.max(2, m.progress.overallPercent ?? 0)}%`"></div>
+                        </div>
+                        <p class="small">
+                          Copying <strong x-text="formatProgress(m.progress.copyPercent)"></strong>
+                          · Verifying <strong x-text="formatProgress(m.progress.verifyPercent)"></strong>
+                          · <span x-text="m.state === 'checking' ? 'counting files…' : formatTimeLeft(m.progress.secondsRemaining)"></span>
+                          <span class="muted" x-show="m.progress.bytesTotal"
+                            x-text="` · ${formatBytes(m.progress.bytesCopied)} of ${formatBytes(m.progress.bytesTotal)}`"></span>
+                        </p>
+                      </div>
+                    </template>
+                    <p x-show="m.message" x-text="m.message"></p>
+                    <p class="small" x-show="m.copied" x-text="`Spot check passed. ${spotCheckText(m)}`"></p>
+                    <p class="small" x-show="m.state === 'check_failed'" x-text="spotCheckText(m)"></p>
+                    <template x-if="m.failedFiles.length > 0">
+                      <details open>
+                        <summary x-text="`${plural(m.failedFiles.length + m.failedFilesMore, 'file')} failed`"></summary>
+                        <ul class="failed-files">
+                          <template x-for="f in m.failedFiles" :key="f.path">
+                            <li><code x-text="f.path"></code> <span class="muted" x-text="f.message"></span></li>
+                          </template>
+                        </ul>
+                        <p class="small muted" x-show="m.failedFilesMore > 0" x-text="`…and ${m.failedFilesMore} more (see VeriCopy's window).`"></p>
+                      </details>
+                    </template>
+                    <div class="actions" x-show="m.canCancel || m.canRecheck">
+                      <button type="button" class="button" x-show="m.canCancel" :disabled="actionBusy === m.id" @click="cancelMove(m)">Cancel</button>
+                      <button type="button" class="button" x-show="m.canRecheck" :disabled="actionBusy === m.id" @click="recheckMove(m)">Check the copy again</button>
+                    </div>
+                    <p class="small" x-show="actionMessage[m.id]" x-text="actionMessage[m.id]" aria-live="polite"></p>
+                    <details class="small">
+                      <summary>History</summary>
+                      <ul class="move-history">
+                        <template x-for="(h, i) in m.history" :key="i">
+                          <li><span class="muted" x-text="formatDateTime(h.at)"></span> · <span x-text="h.note || h.state"></span>
+                            <span class="muted" x-show="h.vericopyStatus" x-text="`(VeriCopy: ${h.vericopyStatus})`"></span></li>
+                        </template>
+                      </ul>
+                      <p class="muted" x-show="m.jobId" x-text="`VeriCopy job ${m.jobId}`"></p>
+                    </details>
+                  </article>
+              </template>
+            </div>
           </section>
 
           <!-- Why -->

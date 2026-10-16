@@ -22,6 +22,7 @@
         <nav aria-label="Pages">
           <a href="/">Overview</a>
           <a href="library.html" aria-current="page">Done HDD</a>
+          <a href="moves.html">Moves</a>
           <a href="notion.html">Link to Notion</a>
           <a href="settings.html">Settings</a>
         </nav>
@@ -86,6 +87,7 @@
                     <a :href="`project.html?id=${p.id}`" x-text="p.name"></a>
                     — <span x-text="formatBytes(p.sizeBytes)"></span>,
                     <span class="muted" x-text="`last edited ${formatDate(p.lastEdited)}`"></span>
+                    · <a :href="`project.html?id=${p.id}`">Move to Archive…</a>
                   </li>
                 </template>
               </ol>
@@ -98,7 +100,10 @@
                 “Move projects until it’s down to” on the <a href="settings.html">Settings</a> page.
               </p>
               <p class="small" x-text="archiveText()"></p>
-              <p class="small muted">Read-only for now: moving projects comes in Phase 5 (with Vericopy's checksums). Copy them with Vericopy yourself until then.</p>
+              <p class="small muted">
+                “Move to Archive…” opens the project's page: it checks everything first, then VeriCopy copies it and verifies
+                every file. The original stays on the Library HDD (nothing is deleted). Progress is on the <a href="moves.html">Moves</a> page.
+              </p>
             </section>
           </template>
 

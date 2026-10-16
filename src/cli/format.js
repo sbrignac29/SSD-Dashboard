@@ -303,7 +303,7 @@ function pinSources(p) {
 
 function exportDetail(p) {
   if (p.hasFinalExport) return `final — ${p.finalExportFile}`;
-  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no export counted as final — see README section 7)`;
+  if (p.hasExport) return `draft only — e.g. ${p.exportExampleFile} (no export counted as final — see README section 8)`;
   return 'none found in this folder';
 }
 

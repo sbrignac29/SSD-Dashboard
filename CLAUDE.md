@@ -5,7 +5,9 @@ projects), finds projects that are finished, and tells the owner which to move
 off it — following their three-drive workflow. Since Phase 3 it's a dashboard in the
 browser (`npm start`, http://localhost:7744); the Terminal commands still work. Since
 Phase 4 it reads the owner's Notion "Projects" board (read-only) so a folder linked to
-a page whose Status is Done counts as finished.
+a page whose Status is Done counts as finished. Since Phase 5A its Move to HDD / Move to
+Archive buttons ask the owner's VeriCopy app (local API, `http://127.0.0.1:8787`) to copy a
+project and verify it; nothing is deleted.
 
 ```
 cards → Working SSD (2TB)        → Library HDD (2TB)              → Archive HDD (28TB)
@@ -29,12 +31,26 @@ might not know (route, schema, module, ...). Don't just hand over code.
   Library or Archive drives.
 - The only place the app writes is the `data/` folder. It never edits `config.json`: the
   Settings page saves into the database (`settings` table), see "Settings page" below.
-- Offload/delete features stay as empty stubs until the owner explicitly asks for them
-  (planned for Phase 5; the dashboard shows "Move to HDD" disabled, "Coming in Phase 5").
-  When built, a "move" must be copy → verify (Vericopy checksums) → only then remove the
-  source, with explicit confirmation. Nothing is ever deleted from the Archive.
+- Moves (Phase 5A) are COPIES done by VeriCopy, never by the dashboard: the dashboard only
+  asks VeriCopy's local API to copy (it never overwrites) and follows the job. Nothing is
+  deleted in Phase 5A. Removing the source (Phase 5B) stays unbuilt until the owner explicitly
+  asks: then only after VeriCopy "verified" AND the spot check passed, with explicit
+  confirmation. Nothing is ever deleted from the Archive.
+- A project is NEVER shown as moved/copied unless VeriCopy said `verified` AND the dashboard's
+  spot check passed (same file count + bytes, `.DS_Store`/`._*` excluded on both sides). The
+  `archive_log` CHECK rule enforces it (`state = 'copied'` needs `vericopy_status IS 'verified'
+  AND spot_check_ok IS 1` — IS, not =, so NULL can't slip through).
+- Outgoing HTTP only to VeriCopy at `vericopy.url`, which must be `http://127.0.0.1:<port>`
+  (`vericopyAddress` in config.js), only on four routes (`GET /api/health`, `POST /api/jobs`,
+  `GET /api/jobs/:id`, `POST /api/jobs/:id/cancel`), never with an Origin header, and only from
+  the server (`src/offload/vericopy.js`), never from browser JavaScript. (Notion's library reaches
+  api.notion.com read-only, guarded separately.)
+- The dashboard never creates folders on a drive: a missing destination parent is a failed
+  pre-check telling the owner which folder to create in Finder.
 - Nothing scans on its own: starting the server never scans; only the Scan now button
   does (the owner asked for "nothing scans until I press it"; there is no scheduled scan).
+  The one automatic read is for moves the owner started: the server polls VeriCopy for
+  unfinished jobs (also right after startup) and spot-checks a verified copy (read-only).
 - Notion is READ-ONLY: the app never writes to Notion (Phase 4). It reads only when the
   owner presses Refresh Notion or Scan now — never at startup,
   no background/scheduled sync. The owner's integration has only "Read content".
@@ -83,6 +99,12 @@ How this is enforced today:
   example's token is `""`. Write fake tokens in tests in pieces (`'ntn' + '_' + ...`).
 - `POST /api/notion/sync`, `POST /api/notion/links` and Scan now's Notion step call
   `assertSafeLocations()` before writing (the syncer does it per sync).
+- Moves: `tests/safety.test.js` also fails if anything but `src/offload/vericopy.js` can send
+  HTTP (fetch, https/net/tls/..., `http.request`/`http.get`; node:http elsewhere only for
+  `createServer`), or if `public/` mentions 127.0.0.1, :8787 or VeriCopy's routes.
+  `tests/vericopy.test.js` checks the client refuses non-127.0.0.1 addresses and odd job ids and
+  sends no Origin; `tests/moves.test.js` runs every move outcome against `tests/fakeVericopy.js`
+  and checks the destination parent is never created. Never the real VeriCopy in tests.
 - `tests/scan.test.js` and `tests/db.test.js` snapshot a fake drive before and after a scan
   (and a scan + save) and assert nothing changed.
 
@@ -146,15 +168,15 @@ How this is enforced today:
 - If the drive disappears mid-scan, the scan throws `ScanError` rather than reporting 0 GB.
 - Results are saved in SQLite (`data/dashboard.db`, via better-sqlite3), so reports and the
   dashboard load without rescanning. See "Storage" below.
-- Later phases: moving projects through the owner's
-  existing Vericopy app (localhost:7743, a Node rsync UI with checksum verification) and a
-  location log recording each hop (SSD → Library on date X → Archive on date Y) so any project
-  can be found (Phase 5).
+- Moves (Phase 5A): through the owner's VeriCopy Mac app (Swift; local API at
+  `http://127.0.0.1:8787` while it's open; its API.md is the contract) and `archive_log`, the
+  hop log (SSD → Library on date X → Archive on date Y) so any project can be found. See
+  "Moves (Phase 5A)" below.
 
 ## The dashboard (Phase 3)
 
-- `npm start` → `src/server.js`: Express 5, port `server.port` (7744; 7743 is Vericopy and is
-  refused by config validation). It opens the database read-write once at startup (creating
+- `npm start` → `src/server.js`: Express 5, port `server.port` (7744; VeriCopy's port, from
+  `vericopy.url`, is refused by config validation). It opens the database read-write once at startup (creating
   and migrating it — not a scan), checks the browser libraries are installed (else "run npm
   install"). Ctrl+C closes connections and the database.
 - Routes (all JSON; `src/web/views.js` builds the answers, read-only, testable without HTTP):
@@ -318,14 +340,15 @@ How this is enforced today:
   foreign keys go back ON afterwards. Changing a UNIQUE rule means a rebuild (migration 3:
   create `projects_v3`, copy rows with their ids, drop, rename).
 - Locations/hops: `projects` describes the Working SSD (`missing = 1` = no longer there).
-  `archive_log` is the hop log: one row per move, with `destination_drive` `library` or
-  `archive`, so a project's location is its latest hop (or the Working SSD while not missing).
+  `archive_log` is the hop log: one row per move, `from_drive` → `to_drive` (working→library or
+  library→archive). In Phase 5A the original stays, so a 'copied' row means "also on to_drive".
   Library scans have their own rows (same path, `drive = 'library'`), so the Library's
   contents are known even while it's unplugged.
 
-Schema (version 5 — migration 1 made the tables, 2 added `newer_footage_file`, 3 rebuilt
+Schema (version 6 — migration 1 made the tables, 2 added `newer_footage_file`, 3 rebuilt
 `projects` with `drive` + UNIQUE (drive, path) + `subfolders`, and added the scans columns,
-4 added `settings`, 5 added Notion: `notion_pages`, `notion_syncs`, and the projects link columns):
+4 added `settings`, 5 added Notion: `notion_pages`, `notion_syncs`, and the projects link columns,
+6 rebuilt `archive_log` for moves, copying any old rows as state 'lost'):
 - `projects`: `id`, `drive` (working/library/archive), `path` (relative to the drive top; UNIQUE
   with drive), `name`, `kind` (project/shared), `client` (container name for container shoots),
   `size_bytes`, `raw|proxy|export|cache|project|other_bytes`, `file_count`,
@@ -346,8 +369,68 @@ Schema (version 5 — migration 1 made the tables, 2 added `newer_footage_file`,
   `drive_total_bytes`, `drive_free_bytes` (statfs at the scan; NULL for older/failed scans).
 - `settings`: exactly one row (`id` = 1, CHECK), `overrides` (JSON, `{}` = nothing changed),
   `updated_at`. Saving is an UPDATE, never a delete.
-- `archive_log` (empty until Phase 5): `id`, `archived_at`, `project_id` → projects, `project_path`,
-  `destination_drive` (library/archive), `size_bytes`, `checksum_result`.
+- `archive_log` (one row per move, `src/db.js` → `createMove` / `updateMove` / `listMoves` /
+  `unfinishedMoves`): `id`, `project_id` → projects (the moved row: working for Move 1, library
+  for Move 2), `project_path`, `project_name`, `from_drive`, `to_drive` (CHECK: working→library or
+  library→archive), `source_path`, `destination_parent` (sent to VeriCopy), `destination_path`,
+  `vericopy_url`, `job_id` (UNIQUE), `size_bytes`, `file_count`, `state` (starting | refused |
+  queued | copying | verifying | checking | copied | check_failed | failed | cancelled |
+  unverified | lost), `vericopy_status`, `status_history` (JSON [{at, state, vericopyStatus,
+  note}]), `progress`, `bytes_copied`, `bytes_total`, `files_total`, `files_copied`,
+  `files_verified`, `files_failed`, `seconds_remaining`, `failed_files` (JSON), `fatal_error`,
+  `spot_check` (JSON), `spot_check_ok`, `error` (plain words), `created_at`, `submitted_at`,
+  `updated_at`, `finished_at`. Rows are never deleted.
+
+## Moves (Phase 5A: `src/offload/`)
+
+- `vericopy.js` — the HTTP client (node:http `request`, imported as `httpRequest` so the Notion
+  guard's `.request(` rule stays as strict; `agent: false`; timeouts 30 s for POST /api/jobs, which
+  scans the source first, else 3–5 s). Builds every path itself from `ROUTES`; job ids must match
+  `/^[A-Za-z0-9-]{1,64}$/`. Errors → `VericopyError(code)`: VeriCopy's `error` codes, or
+  `not_running` / `timeout` / `bad_answer` / `refused_here`. `normalizeJob`: missing keys → null
+  (VeriCopy omits nulls); `progress` is 0–1 over copy AND verify. Node's http sends no Origin
+  (checked against a test server, not assumed); `send()` refuses one anyway.
+- `measure.js` — `measureFolder` (readdir + lstat, no symlink following): files, bytes, newest
+  mtime (housekeeping files and dates > 1 day ahead ignored), `.prlock` files, unreadable items.
+  `.DS_Store` and `._*` are counted apart (`clutterFiles`), not in files/bytes.
+- `moves.js` — `createMover({ db, getConfig, makeClient, getSpaces, getSpace, isScanning,
+  volumesDir, pollMs, now })` → `preview(id)`, `start(id)`, `tick()`, `cancel(moveId)`,
+  `recheck(moveId)`, `startPolling()`, `stopPolling()`, `status()` (last VeriCopy contact).
+  Destination = `<to drive>/<parent parts of relPath>` (VeriCopy copies INTO it, landing at
+  `/<folder name>`). Pre-checks (`checks[]`, pass | fail | warn | info; `canStart` = no fail):
+  eligible (Move 1: bucket Ready; Move 2: in `archivePlan(...).suggested`, shared with the Done
+  HDD page via views.js; never shared/missing), previous (no unfinished move; not already
+  copied there), vericopy (/api/health), drives (`driveProblem`: exists; under /Volumes its
+  `dev` must differ from /Volumes' = not a stale leftover folder), source (exists, readable,
+  not empty), parent (exists, first missing level named; never created), destination (absent:
+  else "leftover partial copy?"), space (free ≥ size × 1.1), quiet (no change for 10 min),
+  apps (info reminder; warn on `.prlock` — running apps can't be listed without child_process).
+- `start` re-runs `preview`, refuses while a scan runs, `createMove` (state starting) BEFORE
+  POST /api/jobs, then saves job_id (queued). VeriCopy refusal → state refused + `refusalText`
+  (plain words per error code); a POST timeout → lost (a job may exist without its id).
+- Polling: `startPolling()` at server start (so unfinished jobs resume) then every 2 s;
+  a round with no unfinished moves is one SELECT. `follow`: orphaned `starting` rows (not in
+  the in-memory `starting` set) → lost; `checking` → spot check again; job_not_found → lost;
+  not_running/timeout → state kept, `status().vericopy.reachable = false`. verified → checking
+  → `spotCheck` → copied | check_failed. failed/cancelled/copied_unverified → failed/cancelled/
+  unverified with the "delete the partial folder in Finder" advice. Unknown statuses: kept,
+  never success. `tick()` clears its in-flight promise only after assigning it (an async
+  function runs synchronously until its first await).
+- Routes: `GET /api/vericopy`, `GET /api/projects/:id/move` (preview + `canEdit`),
+  `POST /api/projects/:id/move` (`{confirm: true}` required, else 400; 202 started; 409 with
+  `reason` checks | refused | scanning | busy, `error` plain words, `preview`/`move`),
+  `GET /api/moves` (`?projectId=`; `movesView`: moves, activeCount, vericopy), `GET /api/moves/:id`,
+  `POST /api/moves/:id/cancel`, `POST /api/moves/:id/recheck`. With phone access, starting/
+  cancelling is loopback-only. `views.moveView` adds label/tone/percentages (`copyPercent` =
+  bytes, `verifyPercent` = files verified/total), `copied`, `canCancel`, `canRecheck`.
+- Pages: project page (Move to HDD…/Move to Archive… → preview card → Start copy; its moves,
+  polled every 2 s while active via `Dashboard.poll`), `moves.html` (Recent jobs), Done HDD
+  suggestions link to the project page. Shared card buttons: `moveCardActions()` in js/moves.js.
+- Tests: `tests/fakeVericopy.js` (a real HTTP server on 127.0.0.1:0 behaving like API.md; records
+  requests; `nextJob`, `nextStartError`, `forgetJobs()`; copies only inside data/.test-*),
+  `tests/moves.test.js`, `tests/vericopy.test.js`, and the network guard in `tests/safety.test.js`
+  (only offload/vericopy.js may send HTTP; elsewhere node:http only for `createServer`; no
+  fetch/https/net/...; public/ never mentions 127.0.0.1 / :8787 / VeriCopy routes).
 
 ## Phases
 
@@ -365,8 +448,9 @@ Schema (version 5 — migration 1 made the tables, 2 added `newer_footage_file`,
    suggested folder ↔ page links confirmed on the Link to Notion page (`src/notion/match.js`),
    Done in Notion → Done 100, Status column + "Not linked yet" filter, End date hint,
    "Notion: not connected" with the last synced statuses kept (migration 5).
-5. Moves via Vericopy (`src/offload/vericopy.js`) + `archive_log` hops — only when explicitly
-   asked. The dashboard's disabled "Move to HDD" / "Move to Archive" buttons are the place.
+5. **5A done:** moves via VeriCopy as verified copies (`src/offload/`), `archive_log` hops
+   (migration 6), pre-checks, live progress, Recent jobs (Moves page), spot check. Nothing deleted.
+   5B (removing the original after a verified copy) only when explicitly asked.
 
 ## Stack and conventions
 
@@ -423,11 +507,13 @@ src/scoring/score.js     the scoring formula + Ready/Review/Keep rule
 src/scoring/plan.js      the move plan (fits on Library? Library full?) and planArchiveMoves (Move 2)
 src/notion/sync.js       reads the Notion Projects data source (read-only), saves it, one sync at a time
 src/notion/match.js      suggests Notion pages for folders (word overlap, IDF-weighted)
-src/offload/             stub for Phase 5
+src/offload/vericopy.js  HTTP client for VeriCopy (127.0.0.1 only, four routes, no Origin)
+src/offload/moves.js     moves: preview + pre-checks, start, polling, spot check (createMover)
+src/offload/measure.js   read-only folder count (files, bytes, newest change) for moves
 public/                  the dashboard pages: index.html, project.html, library.html, notion.html,
-                         settings.html,
+                         settings.html, moves.html,
                          styles.css, js/common.js + one js/*.js per page
-tests/                   unit tests (tests/fakeNotion.js: the fake Notion client, not a test file)
+tests/                   unit tests (fakeNotion.js / fakeVericopy.js: fakes, not test files)
 data/                    the only place the app writes: dashboard.db (gitignored)
 ```
 
@@ -453,6 +539,10 @@ data/                    the only place the app writes: dashboard.db (gitignored
 
 - The database tracks one Working SSD: rows are keyed by path from the drive top, so pointing
   `drives.working` at a different drive marks the first drive's projects missing.
+
+- Phase 5A only copies: a copied project stays on the SSD (still listed as Ready; its page and
+  the Moves page say "Copied to HDD, original still on SSD"). A Library scan during a copy saves
+  the half-copied folder as a Library project until the next Library scan.
 
 - The saved report has no loose files or skipped items (not stored); `npm run scan` shows them.
 

@@ -115,3 +115,27 @@ test('Notion: settings that are the wrong kind of value are explained', () => {
   // An empty End date column name just means "don't read one".
   assert.doesNotThrow(() => withDefaults({ notion: { endDateProperty: '' } }));
 });
+
+test('VeriCopy: defaults to http://127.0.0.1:8787, and only 127.0.0.1 is accepted', () => {
+  assert.equal(withDefaults().vericopy.url, 'http://127.0.0.1:8787');
+  assert.equal(withDefaults({ vericopy: { url: 'http://127.0.0.1:9000/' } }).vericopy.url, 'http://127.0.0.1:9000/');
+  const refused = [
+    'http://localhost:8787', // may resolve to ::1, where VeriCopy isn't listening
+    'https://127.0.0.1:8787',
+    'http://192.168.1.20:8787',
+    'http://127.0.0.1', // no port
+    'http://127.0.0.1:8787/api/jobs',
+    'http://user:pw@127.0.0.1:8787',
+    'http://127.0.0.1:8787?x=1',
+    '',
+    8787,
+  ];
+  for (const url of refused) {
+    assert.throws(() => withDefaults({ vericopy: { url } }), /"vericopy\.url" must be VeriCopy's address/, String(url));
+  }
+});
+
+test("the dashboard can't use VeriCopy's port", () => {
+  assert.throws(() => withDefaults({ server: { port: 8787 } }), /VeriCopy uses that port/);
+  assert.equal(withDefaults({ server: { port: 7743 } }).server.port, 7743, 'the old Vericopy port is free again');
+});

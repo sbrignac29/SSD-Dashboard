@@ -17,6 +17,7 @@ const {
   listNotionPages,
   getNotionPage,
   notionLinkCounts,
+  listMoves,
   SAVED_DRIVES,
 } = require('../db');
 const { scoreProject, isDoneStatus, DAY_MS } = require('../scoring/score');
@@ -698,20 +699,28 @@ function pinResultView(outcome) {
 
 // --- GET /api/library (the Done HDD page) -------------------------------------
 
-function libraryView({ db, config, spaces }) {
-  const configured = typeof config.drives.library === 'string' && config.drives.library.trim() !== '';
+// Move 2's list: which Library projects to move to the Archive (oldest
+// first, once the Library passes its limit). Shared by the Done HDD page and
+// the move pre-checks (offload/moves.js), so both always agree.
+//   spaces – from space.allDriveSpace(config)
+// Returns { live, space, lastScan, projects, ready, readyBytes, plan, suggested: Set of ids }.
+function archivePlan({ db, config, spaces }) {
   const live = spaces.find((s) => s.drive === 'library')?.space ?? null;
   const lastScan = latestScan(db, 'finished', { drive: 'library' });
-  const lastAttempt = latestScan(db, undefined, { drive: 'library' });
   const space = spaceDetails(live ?? lastScan?.driveSpace ?? null);
-  const context = { config, scanMs: lastScan?.startedMs ?? Date.now() };
-
   const projects = presentProjects(db, 'library');
-  const shared = listProjects(db, { drive: 'library' }).filter((p) => p.kind === 'shared' && !p.missing);
   const ready = presentProjects(db, 'working').filter((p) => p.scoring?.bucket === 'Ready');
   const readyBytes = sum(ready, (p) => p.sizeBytes);
   const plan = planArchiveMoves({ libraryProjects: projects, space, libraryFull: config.libraryFull, incomingBytes: readyBytes });
-  const suggested = new Set((plan?.moves ?? []).map((p) => p.id));
+  return { live, space, lastScan, projects, ready, readyBytes, plan, suggested: new Set((plan?.moves ?? []).map((p) => p.id)) };
+}
+
+function libraryView({ db, config, spaces }) {
+  const configured = typeof config.drives.library === 'string' && config.drives.library.trim() !== '';
+  const { live, space, lastScan, projects, ready, readyBytes, plan, suggested } = archivePlan({ db, config, spaces });
+  const lastAttempt = latestScan(db, undefined, { drive: 'library' });
+  const context = { config, scanMs: lastScan?.startedMs ?? Date.now() };
+  const shared = listProjects(db, { drive: 'library' }).filter((p) => p.kind === 'shared' && !p.missing);
   const archive = spaces.find((s) => s.drive === 'archive');
 
   return {
@@ -874,6 +883,94 @@ function notionLinkResultView(outcome, { action, count }) {
   };
 }
 
+// --- Moves (Phase 5): the project page's move box and the Moves page ---------
+
+// What each move state is called on the pages, and its colour:
+//   active (blue, still going) | success | problem (red) | warn
+const MOVE_STATES = {
+  starting: { label: 'Asking VeriCopy to start…', tone: 'active' },
+  queued: { label: "Waiting in VeriCopy's queue", tone: 'active' },
+  copying: { label: 'Copying', tone: 'active' },
+  verifying: { label: 'Verifying checksums', tone: 'active' },
+  checking: { label: 'Spot-checking the copy', tone: 'active' },
+  copied: { label: null, tone: 'success' }, // see copiedLabel
+  check_failed: { label: 'Verified, but the spot check failed: not marked as copied', tone: 'problem' },
+  failed: { label: 'Copy failed', tone: 'problem' },
+  cancelled: { label: 'Cancelled', tone: 'warn' },
+  unverified: { label: 'Copied without verification: not a success', tone: 'problem' },
+  lost: { label: 'Lost: copy state unknown', tone: 'problem' },
+  refused: { label: 'Not started: VeriCopy refused', tone: 'warn' },
+};
+
+// The success wording (the original is never removed in this phase).
+function copiedLabel(toDrive) {
+  return toDrive === 'archive' ? 'Copied to Archive, original still on the Library HDD' : 'Copied to HDD, original still on SSD';
+}
+
+function percentOf(part, whole) {
+  return part === null || part === undefined || !(whole > 0) ? null : Math.min(100, Math.round((part / whole) * 1000) / 10);
+}
+
+// One archive_log row, for the pages.
+function moveView(move) {
+  const state = MOVE_STATES[move.state] ?? { label: move.state, tone: 'problem' };
+  return {
+    id: move.id,
+    projectId: move.projectId,
+    projectName: move.projectName,
+    projectPath: move.projectPath,
+    fromDrive: move.fromDrive,
+    toDrive: move.toDrive,
+    fromLabel: DRIVE_LABELS[move.fromDrive],
+    toLabel: DRIVE_LABELS[move.toDrive],
+    sourcePath: move.sourcePath,
+    destinationPath: move.destinationPath,
+    jobId: move.jobId,
+    sizeBytes: move.sizeBytes,
+    fileCount: move.fileCount,
+    state: move.state,
+    label: move.state === 'copied' ? copiedLabel(move.toDrive) : state.label,
+    tone: state.tone,
+    active: move.unfinished,
+    // Only "copied" is a success, and the database refuses to save it unless
+    // VeriCopy said verified AND the spot check passed.
+    copied: move.state === 'copied' && move.vericopyStatus === 'verified' && move.spotCheckOk === true,
+    vericopyStatus: move.vericopyStatus,
+    progress: {
+      // VeriCopy's own 0–1 figure covers copying AND verifying together.
+      overallPercent: move.progress === null ? null : Math.round(move.progress * 1000) / 10,
+      copyPercent: percentOf(move.bytesCopied, move.bytesTotal),
+      verifyPercent: percentOf(move.filesVerified, move.filesTotal),
+      bytesCopied: move.bytesCopied,
+      bytesTotal: move.bytesTotal,
+      filesTotal: move.filesTotal,
+      filesCopied: move.filesCopied,
+      filesVerified: move.filesVerified,
+      filesFailed: move.filesFailed,
+      secondsRemaining: move.unfinished ? move.secondsRemaining : null,
+    },
+    failedFiles: move.failedFiles.slice(0, 100),
+    failedFilesMore: Math.max(0, move.failedFiles.length - 100),
+    fatalError: move.fatalError,
+    message: move.error,
+    spotCheck: move.spotCheck,
+    history: move.history,
+    canCancel: move.unfinished && Boolean(move.jobId) && move.state !== 'checking',
+    canRecheck: move.state === 'check_failed' && move.vericopyStatus === 'verified',
+    createdAt: iso(move.createdMs),
+    submittedAt: iso(move.submittedMs),
+    updatedAt: iso(move.updatedMs),
+    finishedAt: iso(move.finishedMs),
+  };
+}
+
+// GET /api/moves: the Recent jobs list (newest first), or one project's moves.
+//   status – the mover's status(): when VeriCopy last answered
+function movesView({ db, status, projectId = null, limit = 50 }) {
+  const moves = listMoves(db, { limit, projectId }).map(moveView);
+  return { moves, activeCount: moves.filter((m) => m.active).length, vericopy: status?.vericopy ?? null };
+}
+
 module.exports = {
   RequestError,
   drivesView,
@@ -882,9 +979,12 @@ module.exports = {
   projectDetailView,
   pinResultView,
   libraryView,
+  archivePlan,
   notionView,
   notionLinksView,
   notionLinkResultView,
+  moveView,
+  movesView,
   folderTree,
   tagList,
   endDateHint,

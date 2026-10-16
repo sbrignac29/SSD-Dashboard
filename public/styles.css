@@ -1343,3 +1343,63 @@ details[open] > summary .tree-toggle {
     display: none;
   }
 }
+
+/* --- Moves (Phase 5): project page + Moves page ----------------------------- */
+
+.check-warn .check-mark {
+  background: var(--check-bg);
+  color: var(--check-text);
+}
+
+.move-list {
+  display: grid;
+  gap: 14px;
+}
+
+.move-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.move-active {
+  border-left-color: var(--series-1);
+}
+
+.move-success {
+  border-left-color: var(--good);
+}
+
+.move-warn {
+  border-left-color: var(--warning);
+}
+
+.move-problem {
+  border-left-color: var(--critical);
+  background: var(--banner-error-bg);
+}
+
+.move-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.move-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.failed-files,
+.move-history {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: 4px;
+}

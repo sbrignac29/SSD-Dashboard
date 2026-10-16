@@ -249,7 +249,7 @@ describe('the settings routes', () => {
       assert.equal(body.canEdit, true);
       assert.deepEqual(
         body.sections.map((s) => s.id),
-        ['drives', 'libraryFull', 'scoring', 'folders', 'fileTypes'],
+        ['drives', 'libraryFull', 'scoring', 'folders', 'vericopy', 'fileTypes'],
       );
       assert.deepEqual(body.fixed.map((f) => f.key), ['server.port', 'server.host']);
     } finally {
