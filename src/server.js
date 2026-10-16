@@ -17,6 +17,10 @@
 //   GET  /api/library            the Done HDD page: Library projects + the Archive move list
 //   POST /api/scan               scan the connected drives now (answers at once; the scan keeps going)
 //   GET  /api/scan               how far the scan is (the page asks twice a second)
+//   GET  /api/notion             "Notion: connected / not connected", last sync, link counts
+//   POST /api/notion/sync        the Refresh Notion button: read the Projects board now
+//   GET  /api/notion/links       the Link to Notion page: folders + suggested Notion pages
+//   POST /api/notion/links       Confirm / No Notion page / undo, for one or more folders
 //   GET  /api/settings           the Settings page: every setting, and where its value comes from
 //   POST /api/settings           save changed settings (in data/dashboard.db, never config.json)
 //   POST /api/settings/reset     forget the Settings page's changes: use config.json again
@@ -30,20 +34,22 @@
 // touches the drives or the database itself; it can only ask the server.
 //
 // SAFETY (see CLAUDE.md): the server only READS the drives (scans, and statfs
-// for free space) and only WRITES to data/ (the database: scans, pins and
-// the Settings page's changes).
-// Starting it never scans anything; only the Scan now button does.
+// for free space) and only WRITES to data/ (the database: scans, pins, Notion
+// links and the Settings page's changes). It only READS Notion
+// (src/notion/sync.js), and only when you press Refresh Notion or Scan now.
+// Starting it never scans or syncs anything; only the Scan now button does.
 
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
-const { ROOT_DIR, loadConfig, assertSafeLocations, ConfigError } = require('./config');
+const { ROOT_DIR, loadConfig, assertSafeLocations, notionSettings, ConfigError } = require('./config');
 const { createSettingsStore, loadAppConfig, SettingsError } = require('./settings');
-const { openDatabase, describeDatabaseError, togglePinById, displayPath } = require('./db');
+const { openDatabase, describeDatabaseError, togglePinById, setNotionLinks, displayPath } = require('./db');
 const { allDriveSpace } = require('./scanner/space');
 const { ScanError } = require('./scanner/scan');
 const views = require('./web/views');
 const { createScanRunner } = require('./web/scanRunner');
+const { createNotionSyncer } = require('./notion/sync');
 
 // Express is installed by `npm install`. If it's missing (e.g. right after
 // pulling this update), say so plainly instead of crashing.
@@ -106,6 +112,18 @@ function readId(text) {
   return Number(text);
 }
 
+// The body of POST /api/notion/links: { projectIds: [12], action, pageId? }.
+function readLinkRequest(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new views.RequestError(400, 'Send { "projectIds": [...], "action": "confirm" | "none" | "clear", "pageId": "..." }.');
+  }
+  const { projectIds, action, pageId } = body;
+  if (!Array.isArray(projectIds) || projectIds.length > 1000) {
+    throw new views.RequestError(400, '"projectIds" must be a list of project ids.');
+  }
+  return { projectIds, action, pageId: pageId ?? null };
+}
+
 // Builds the Express app (without starting it, so tests can run it on any port).
 //   db         – the open database
 //   runner     – the scan runner (web/scanRunner.js)
@@ -113,6 +131,7 @@ function readId(text) {
 //   getConfig  – returns the current settings (config.json + the Settings
 //                page); re-read for every request, so edits to config.json
 //                show up without restarting
+//   notion     – the Notion syncer (notion/sync.js); one is made if not given
 //   getSpaces  – how full each drive is (tests pass fake numbers)
 //   localOnly  – turn the localhost guard on (off for phone access)
 function createApp({
@@ -120,15 +139,18 @@ function createApp({
   runner,
   settings = createSettingsStore({ db }),
   getConfig = () => settings.current(),
+  notion,
   getSpaces = allDriveSpace,
   localOnly = true,
 }) {
   if (!express) throw new ConfigError(NPM_INSTALL_ADVICE);
+  const syncer = notion ?? createNotionSyncer({ db, getConfig });
   const app = express();
   app.disable('x-powered-by');
   if (localOnly) app.use(onlyLocalhost);
   app.use(postsMustBeJson);
-  // Turns the JSON a POST sends into req.body (the Settings page's values).
+  // Turns the JSON a POST sends into req.body (the Settings page's values,
+  // the Link buttons' choices).
   app.use(express.json({ limit: '200kb' }));
   // API answers are always fresh: tell the browser not to keep old copies.
   app.use('/api', (req, res, next) => {
@@ -177,6 +199,33 @@ function createApp({
     // or no drive plugged in) that's not an error: a normal 200 answer whose
     // `started: false` and message say why, which the page shows calmly.
     res.status(outcome.started ? 202 : 200).json({ ...outcome.status, started: outcome.started, reason: outcome.reason ?? null });
+  });
+
+  app.get('/api/notion', (req, res) => {
+    res.json(views.notionView({ db, config: getConfig(), syncing: syncer.isRunning() }));
+  });
+
+  app.post('/api/notion/sync', async (req, res) => {
+    // Waits for the sync (a few seconds at most). Notion problems aren't
+    // errors here: `ok: false` and the message say what's wrong, and the
+    // dashboard keeps using the last synced statuses.
+    const outcome = await syncer.sync({ triggeredBy: 'button' });
+    res.json({ ...outcome, notion: views.notionView({ db, config: getConfig(), syncing: syncer.isRunning() }) });
+  });
+
+  app.get('/api/notion/links', (req, res) => {
+    res.json(views.notionLinksView({ db, config: getConfig(), query: req.query, syncing: syncer.isRunning() }));
+  });
+
+  app.post('/api/notion/links', (req, res) => {
+    const config = getConfig();
+    // SAFETY: saving a link writes to the database, so the same checks as a pin.
+    assertSafeLocations(config);
+    const request = readLinkRequest(req.body);
+    const outcome = setNotionLinks(db, config, request);
+    const answer = views.notionLinkResultView(outcome, { action: request.action, count: new Set(request.projectIds).size });
+    const status = { ok: 200, 'not-found': 404, 'unknown-page': 409 }[outcome.result] ?? 400;
+    res.status(status).json(answer);
   });
 
   app.get('/api/settings', (req, res) => {
@@ -264,10 +313,13 @@ function main() {
     db.close();
     throw error;
   }
-  const runner = createScanRunner({ db, getConfig: () => settings.current() });
+  const getConfig = () => settings.current();
+  // Reads Notion only when asked (Refresh Notion, or Scan now).
+  const notion = createNotionSyncer({ db, getConfig });
+  const runner = createScanRunner({ db, getConfig, notion });
   // Port and host only come from config.json (the Settings page shows them, read-only).
   const { port, host } = config.server;
-  const app = createApp({ db, runner, settings, localOnly: isLoopback(host) });
+  const app = createApp({ db, runner, settings, notion, localOnly: isLoopback(host) });
   const server = http.createServer(app);
 
   server.on('error', (error) => {
@@ -291,6 +343,11 @@ function main() {
       console.log(`  On your phone (same Wi-Fi): http://<this Mac's name>.local:${port}`);
     }
     console.log('  Nothing is scanned until you press "Scan now".');
+    console.log(
+      notionSettings(config).configured
+        ? '  Notion: read when you press "Refresh Notion" or "Scan now" (never on its own).'
+        : '  Notion: not connected (no notion.token in config.json yet; see the README).',
+    );
     console.log(`  Settings: ${source} · Database: ${displayPath()}`);
     console.log('  Press Ctrl+C to stop.');
   });

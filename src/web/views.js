@@ -8,11 +8,21 @@
 // can be tested without starting a web server. Nothing here writes anything:
 // it only reads the database.
 
-const { DRIVE_LABELS } = require('../config');
-const { latestScan, listProjects, getProject, SAVED_DRIVES } = require('../db');
-const { scoreProject, DAY_MS } = require('../scoring/score');
+const { DRIVE_LABELS, notionSettings } = require('../config');
+const {
+  latestScan,
+  listProjects,
+  getProject,
+  latestNotionSync,
+  listNotionPages,
+  getNotionPage,
+  notionLinkCounts,
+  SAVED_DRIVES,
+} = require('../db');
+const { scoreProject, isDoneStatus, DAY_MS } = require('../scoring/score');
 const { planMoves, planArchiveMoves } = require('../scoring/plan');
 const { isPinnedByConfig } = require('../scanner/scan');
+const { createMatcher, LIKELY_SCORE } = require('../notion/match');
 
 // A problem with the request itself (a bad filter value, an unknown id).
 // server.js answers these with their HTTP status: 400 "bad request", 404 "not found".
@@ -96,15 +106,48 @@ function parseDay(text, name, { endOfDay }) {
   return ms;
 }
 
+// A Notion date ("2026-10-03", or with a time) as milliseconds. A plain day is
+// read in this Mac's time zone: new Date('2026-10-03') would mean midnight in
+// London, which is the evening of Oct 2 in Chicago.
+function notionDateMs(text) {
+  if (!text) return null;
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (day) return new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])).getTime();
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// Notion's End date as a hint (not part of the score): "Delivered Oct 3, 2026",
+// "Due Oct 20, 2026", or a passed date on a page that isn't done.
+function endDateHint(status, endDate, doneStatuses, now = Date.now()) {
+  const ms = notionDateMs(endDate);
+  if (ms === null) return null;
+  const day = formatDay(ms);
+  if (isDoneStatus(status, doneStatuses)) return `Delivered ${day}`;
+  const today = new Date(now);
+  if (ms >= new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()) return `Due ${day}`;
+  return `End date ${day} has passed (${status ? `still ${status}` : 'no status'} in Notion)`;
+}
+
+// What made a project finished, for short reasons: 'Done in Notion', 'Final export', or null.
+function finishedBy(project, config) {
+  if (isDoneStatus(project.notionStatus, config.doneStatuses)) return 'Done in Notion';
+  return project.hasFinalExport ? 'Final export' : null;
+}
+
 // --- Tags: the plain-language version of the buckets -------------------------
 
 // One tag per project, shown before the score. Built from the bucket the last
 // scan (or pin) saved, so the page always agrees with `npm run report`.
 function tagList(config) {
   return [
-    { id: 'ready', label: 'Ready to move to HDD', hint: `Finished, and untouched for ${config.ageDays.recent}+ days.` },
-    { id: 'check', label: 'Check first', hint: 'Finished but not safe to move yet, or old and big with no final export.' },
-    { id: 'keep', label: 'Keep on SSD', hint: 'Not finished yet (no final export).' },
+    {
+      id: 'ready',
+      label: 'Ready to move to HDD',
+      hint: `Finished (Done in Notion, or a final export), and untouched for ${config.ageDays.recent}+ days.`,
+    },
+    { id: 'check', label: 'Check first', hint: 'Finished but not safe to move yet, or old and big but not finished.' },
+    { id: 'keep', label: 'Keep on SSD', hint: 'Not finished yet (no final export, not Done in Notion).' },
     { id: 'pinned', label: 'Pinned to SSD', hint: 'You pinned it as Keep: it stays on the SSD.' },
   ];
 }
@@ -147,7 +190,7 @@ function shortBlockers(project, daysSinceEdit, config) {
 // One short line under the tag: the main reason for it.
 function shortReason(project, tag, { scanMs, config }) {
   const days = daysBefore(scanMs, project.lastEditedMs);
-  if (tag === 'ready') return `Final export · untouched ${Math.floor(days)} days`;
+  if (tag === 'ready') return `${finishedBy(project, config)} · untouched ${Math.floor(days)} days`;
   if (tag === 'pinned') {
     const would = /would be (Ready|Review)/.exec(project.scoring.notes.join(' '))?.[1];
     if (would === 'Ready') return 'You pinned it · otherwise ready to move';
@@ -155,7 +198,7 @@ function shortReason(project, tag, { scanMs, config }) {
     return 'You pinned it';
   }
   if (tag === 'check') {
-    if (!project.hasFinalExport) return 'Old and big, but no final export';
+    if (!finishedBy(project, config)) return 'Old and big, but no final export';
     const reasons = shortBlockers(project, days, config);
     if (reasons.length === 0) return 'Finished — rescan to update';
     return reasons.length === 1 ? reasons[0] : `${reasons[0]} (+${reasons.length - 1} more)`;
@@ -179,8 +222,10 @@ function projectRow(project, context) {
     lastEdited: iso(project.lastEditedMs),
     hasExport: project.hasExport,
     hasFinalExport: project.hasFinalExport,
-    // Notion's status for the project: connects in Phase 4.
-    status: null,
+    // The linked Notion page's status (null if not linked).
+    status: project.notionLink === 'confirmed' ? project.notionStatus : null,
+    notionLink: project.drive === 'working' ? project.notionLink : null, // 'confirmed' | 'none' | null
+    notionTitle: project.notionLink === 'confirmed' ? project.notionTitle : null,
     tag,
     reason: tag ? shortReason(project, tag, context) : null,
     score: project.scoring?.score ?? null,
@@ -296,6 +341,8 @@ function summaryView({ db, config, spaces }) {
 //   tag    – ready | check | keep | pinned (Working SSD only)
 //   client – a client name, or empty (client=) for projects with no client
 //   from, to – last edited between these days (YYYY-MM-DD), inclusive
+//   notion – unlinked (not linked yet) | no-page (marked "No Notion page") | linked
+//   status – a Notion status, e.g. Done (linked projects with that status)
 // Sorted by score, highest first (ties: biggest first). Library projects have
 // no score, so they're sorted oldest first.
 function projectsView({ db, config, query = {} }) {
@@ -307,6 +354,11 @@ function projectsView({ db, config, query = {} }) {
   const fromMs = parseDay(readString(query, 'from'), 'from', { endOfDay: false });
   const toMs = parseDay(readString(query, 'to'), 'to', { endOfDay: true });
   if (fromMs !== null && toMs !== null && fromMs > toMs) throw new RequestError(400, '"from" must be on or before "to".');
+  const notion = readString(query, 'notion') || undefined;
+  if (notion !== undefined && !Object.hasOwn(NOTION_FILTERS, notion)) {
+    throw new RequestError(400, `"notion" must be one of: ${Object.keys(NOTION_FILTERS).join(', ')}.`);
+  }
+  const status = readString(query, 'status') || undefined;
 
   const lastScan = latestScan(db, 'finished', { drive });
   const context = { config, scanMs: lastScan?.startedMs ?? Date.now() };
@@ -323,6 +375,8 @@ function projectsView({ db, config, query = {} }) {
       return (fromMs === null || ms >= fromMs) && (toMs === null || ms <= toMs);
     });
   }
+  if (notion !== undefined) rows = rows.filter((p) => p.notionLink === NOTION_FILTERS[notion]);
+  if (status !== undefined) rows = rows.filter((p) => (p.status ?? '').toLowerCase() === status.trim().toLowerCase());
   const tagCounts = Object.fromEntries(TAG_IDS.map((id) => [id, rows.filter((p) => p.tag === id).length]));
   if (drive === 'working' && tag) rows = rows.filter((p) => p.tag === tag);
 
@@ -338,11 +392,17 @@ function projectsView({ db, config, query = {} }) {
     tagCounts: drive === 'working' ? tagCounts : null,
     clients,
     hasNoClient: all.some((p) => !p.client),
+    // For the Notion filter: the statuses in use, and how many aren't linked yet.
+    statuses: [...new Set(all.map((p) => p.status).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    notionCounts: Object.fromEntries(Object.entries(NOTION_FILTERS).map(([id, link]) => [id, all.filter((p) => p.notionLink === link).length])),
     totalCount: all.length,
     projects: rows,
     totals: { count: rows.length, bytes: sum(rows, (p) => p.sizeBytes), byType: totalsByType(rows) },
   };
 }
+
+// The `notion` filter's values -> the link they select.
+const NOTION_FILTERS = { unlinked: null, 'no-page': 'none', linked: 'confirmed' };
 
 // Oldest last edit first; projects with no dated files go last.
 function oldestFirst(a, b) {
@@ -391,19 +451,24 @@ function readyChecks(project, scoring, context) {
   const days = scoring.daysSinceEdit;
   const checks = [];
 
-  if (project.hasFinalExport) {
-    checks.push({ id: 'finished', label: 'Finished (has a final export)', state: 'pass', detail: project.finalExportFile });
+  const finishedLabel = 'Finished (Done in Notion, or a final export)';
+  if (isDoneStatus(project.notionStatus, config.doneStatuses)) {
+    const alsoExport = project.hasFinalExport ? ` Final export: ${project.finalExportFile}` : '';
+    checks.push({ id: 'finished', label: finishedLabel, state: 'pass', detail: `Done in Notion ("${project.notionTitle}").${alsoExport}` });
+  } else if (project.hasFinalExport) {
+    checks.push({ id: 'finished', label: finishedLabel, state: 'pass', detail: project.finalExportFile });
   } else {
     checks.push({
       id: 'finished',
-      label: 'Finished (has a final export)',
+      label: finishedLabel,
       state: 'fail',
       detail: project.hasExport
         ? `Only draft exports so far (e.g. ${project.exportExampleFile}). Name the finished export "Final" or "FD", ` +
-          'or save it in a "Final Exports" folder.'
-        : 'No exports found in this folder.',
+          'or save it in a "Final Exports" folder — or mark it Done in Notion.'
+        : 'No exports found in this folder, and not Done in Notion.',
     });
   }
+  checks.push(notionCheck(project, config, context.now));
 
   if (days === null) {
     checks.push({ id: 'untouched', label: `Untouched for ${recent}+ days`, state: 'fail', detail: 'No file dates were found.' });
@@ -464,8 +529,30 @@ function readyChecks(project, scoring, context) {
     detail: sources.length > 0 ? `Pinned by ${sources.join(' and ')}. A pinned project always stays.` : null,
   });
 
-  checks.push({ id: 'notion', label: 'Notion status', state: 'na', detail: '— (Notion connects in Phase 4)' });
   return checks;
+}
+
+// "Done in Notion": the signal that shows why a project with no final export
+// can still be Ready. 'pass' when the linked page is Done, 'info' when it's
+// linked but not done (the export rule decides), 'na' when not linked.
+function notionCheck(project, config, now) {
+  const base = { id: 'notion', label: 'Done in Notion' };
+  if (project.notionLink === 'confirmed') {
+    const done = isDoneStatus(project.notionStatus, config.doneStatuses);
+    const facts = [
+      `"${project.notionTitle}" is ${project.notionStatus ? `"${project.notionStatus}"` : 'without a status'}`,
+      endDateHint(project.notionStatus, project.notionEndDate, config.doneStatuses, now),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return done
+      ? { ...base, state: 'pass', detail: `${facts}. That alone makes it finished (Done = 100).` }
+      : { ...base, state: 'info', detail: `${facts}. Not done in Notion yet, so the final export decides.` };
+  }
+  if (project.notionLink === 'none') {
+    return { ...base, state: 'na', detail: 'You marked it "No Notion page", so the final export decides.' };
+  }
+  return { ...base, state: 'na', detail: 'Not linked to a Notion page yet (see Link to Notion). Until then, the final export decides.' };
 }
 
 // The score, part by part: "Done 70 × 0.45 = 31.5 points".
@@ -479,7 +566,12 @@ function scoreParts(project, scoring, largest, config) {
       label: 'Done',
       value: scoring.parts.done,
       weight: weights.done,
-      why: scoring.parts.done === 100 ? 'Notion says done' : scoring.parts.done === 70 ? 'it has a final export' : 'no final export yet',
+      why:
+        scoring.parts.done === 100
+          ? `Done in Notion ("${project.notionTitle}")`
+          : scoring.parts.done === 70
+            ? 'it has a final export'
+            : 'no final export yet, not Done in Notion',
     },
     {
       id: 'age',
@@ -506,7 +598,7 @@ function projectDetailView({ db, config, id }) {
   const project = getProject(db, id);
   if (!project) throw new RequestError(404, "There's no project with that id. It may be from an older database.");
   const lastScan = latestScan(db, 'finished', { drive: project.drive });
-  const context = { config, scanMs: lastScan?.startedMs ?? Date.now() };
+  const context = { config, scanMs: lastScan?.startedMs ?? Date.now(), now: Date.now() };
 
   const result = {
     project: {
@@ -526,8 +618,25 @@ function projectDetailView({ db, config, id }) {
     treeDepth: 3,
     scoring: null,
     pin: null,
+    notion: null,
   };
   if (project.drive !== 'working' || project.kind !== 'project') return result;
+
+  const page = project.notionPageId ? getNotionPage(db, project.notionPageId) : undefined;
+  result.notion = {
+    link: project.notionLink, // 'confirmed' | 'none' | null (not decided yet)
+    pageId: project.notionPageId,
+    title: project.notionTitle,
+    status: project.notionStatus,
+    endDate: project.notionEndDate,
+    endHint: project.notionLink === 'confirmed' ? endDateHint(project.notionStatus, project.notionEndDate, config.doneStatuses, context.now) : null,
+    doneInNotion: isDoneStatus(project.notionStatus, config.doneStatuses),
+    syncedAt: iso(project.notionSyncedMs),
+    decidedAt: iso(project.linkDecidedMs),
+    url: page?.url ?? null,
+    // The page wasn't in the last sync: deleted in Notion, or no longer shared.
+    pageGone: page ? !page.inLastSync : false,
+  };
 
   const pins = pinSources(project, config);
   result.pin = { ...pins, pinned: pins.database || pins.config };
@@ -628,6 +737,143 @@ function libraryView({ db, config, spaces }) {
   };
 }
 
+// --- GET /api/notion: the "Notion: connected / not connected" line ------------
+
+//   syncing – a sync is running right now
+function notionView({ db, config, syncing = false }) {
+  const settings = notionSettings(config);
+  const lastSync = latestNotionSync(db, 'finished');
+  const lastAttempt = latestNotionSync(db);
+  const lastFailure =
+    lastAttempt && lastAttempt.status === 'failed' && (!lastSync || lastAttempt.id > lastSync.id)
+      ? { at: iso(lastAttempt.finishedMs), message: lastAttempt.error }
+      : null;
+  let state;
+  if (!settings.token) state = 'no-token';
+  else if (!settings.dataSourceId) state = 'no-data-source';
+  else if (lastFailure) state = 'failed';
+  else if (!lastSync) state = 'never-synced';
+  else state = 'connected';
+  const details = {
+    'no-token': 'No Notion token in config.json yet (notion.token). The README walks you through making one.',
+    'no-data-source': 'No data source ID in config.json yet (notion.dataSourceId).',
+    failed: lastFailure?.message,
+    'never-synced': 'Press Refresh Notion to read your Projects board.',
+    connected: null,
+  };
+  const pages = listNotionPages(db).filter((p) => p.inLastSync).length;
+  return {
+    state, // connected | never-synced | failed | no-token | no-data-source
+    connected: state === 'connected',
+    configured: settings.configured,
+    headline: { connected: 'Notion: connected', 'never-synced': 'Notion: not synced yet' }[state] ?? 'Notion: not connected',
+    detail: details[state],
+    syncing,
+    lastSync: lastSync ? { at: iso(lastSync.finishedMs), pageCount: lastSync.pageCount } : null,
+    lastFailure,
+    // Not connected, but statuses from an earlier sync are still being used.
+    usingSavedStatuses: state !== 'connected' && Boolean(lastSync),
+    pageCount: pages,
+    counts: notionLinkCounts(db),
+    doneStatuses: config.doneStatuses,
+  };
+}
+
+// --- GET /api/notion/links: the Link to Notion page ---------------------------
+
+const LINK_SHOWS = ['todo', 'linked', 'none'];
+const LINK_STATES = { todo: null, linked: 'confirmed', none: 'none' };
+
+// Filters (all optional):
+//   show   – todo (not linked yet, the default) | linked | none ("No Notion page")
+//   client – only this container's folders ("" for folders with no container)
+//   id     – just this one project, whatever its link (the project page's "Change")
+// Each row has its top 3 suggested Notion pages. The to-do list is sorted best
+// suggestion first, so the easy confirmations come first.
+function notionLinksView({ db, config, query = {}, syncing = false }) {
+  const show = readString(query, 'show') || 'todo';
+  if (!LINK_SHOWS.includes(show)) throw new RequestError(400, `"show" must be one of: ${LINK_SHOWS.join(', ')}.`);
+  const client = readString(query, 'client');
+  const idText = readString(query, 'id');
+  if (idText !== undefined && !/^\d+$/.test(idText)) throw new RequestError(400, '"id" must be a project id.');
+
+  const projects = presentProjects(db, 'working');
+  const pages = listNotionPages(db);
+  const current = pages.filter((p) => p.inLastSync);
+  // Which folders each page is already linked to (to say so, and to rank it lower).
+  const linkedTo = new Map();
+  for (const p of projects) {
+    if (p.notionLink !== 'confirmed') continue;
+    if (!linkedTo.has(p.notionPageId)) linkedTo.set(p.notionPageId, []);
+    linkedTo.get(p.notionPageId).push({ id: p.id, name: p.name });
+  }
+  const matcher = createMatcher(
+    projects,
+    current.map((p) => ({ pageId: p.pageId, title: p.title, status: p.status, linkedTo: linkedTo.get(p.pageId) })),
+  );
+  const pageById = new Map(pages.map((p) => [p.pageId, p]));
+
+  const inClient = projects.filter((p) => client === undefined || (client === '' ? !p.client : p.client === client));
+  const counts = Object.fromEntries(LINK_SHOWS.map((id) => [id, inClient.filter((p) => p.notionLink === LINK_STATES[id]).length]));
+  const chosen =
+    idText !== undefined
+      ? projects.filter((p) => p.id === Number(idText))
+      : inClient.filter((p) => p.notionLink === LINK_STATES[show]);
+  if (idText !== undefined && chosen.length === 0) {
+    throw new RequestError(404, "There's no Working SSD project with that id (it may no longer be on the SSD).");
+  }
+
+  const rows = chosen.map((p) => {
+    const page = p.notionPageId ? pageById.get(p.notionPageId) : undefined;
+    return {
+      id: p.id,
+      name: p.name,
+      relPath: p.relPath,
+      client: p.client,
+      sizeBytes: p.sizeBytes,
+      lastEdited: iso(p.lastEditedMs),
+      link: {
+        state: p.notionLink,
+        pageId: p.notionPageId,
+        title: p.notionTitle,
+        status: p.notionStatus,
+        pageGone: page ? !page.inLastSync : false,
+      },
+      suggestions: matcher.suggest(p),
+    };
+  });
+  const best = (row) => row.suggestions[0]?.score ?? 0;
+  rows.sort((a, b) => (show === 'todo' && idText === undefined ? best(b) - best(a) : 0) || a.name.localeCompare(b.name));
+
+  return {
+    notion: notionView({ db, config, syncing }),
+    show,
+    counts,
+    clients: [...new Set(projects.map((p) => p.client).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    rows,
+    // Every page from the last sync, A to Z, for the "other page" dropdown.
+    pages: current.map((p) => ({ pageId: p.pageId, title: p.title || '(Untitled)', status: p.status })),
+    likelyScore: Math.round(LIKELY_SCORE * 100),
+  };
+}
+
+// setNotionLinks()'s outcome, in plain words for the page.
+function notionLinkResultView(outcome, { action, count }) {
+  if (outcome.result !== 'ok') return { ok: false, result: outcome.result, message: outcome.problem };
+  const what = count === 1 ? `"${outcome.projects[0]?.name ?? 'The project'}"` : `${count} folders`;
+  const messages = {
+    confirm: `Linked ${what} to "${outcome.projects[0]?.notionTitle}".`,
+    none: `Marked ${what}: no Notion page.`,
+    clear: `${what} ${count === 1 ? 'is' : 'are'} back on the "not linked yet" list.`,
+  };
+  return {
+    ok: true,
+    result: 'ok',
+    message: messages[action],
+    projects: outcome.projects.map((p) => ({ id: p.id, name: p.name, score: p.scoring.score, bucket: p.scoring.bucket })),
+  };
+}
+
 module.exports = {
   RequestError,
   drivesView,
@@ -636,6 +882,10 @@ module.exports = {
   projectDetailView,
   pinResultView,
   libraryView,
+  notionView,
+  notionLinksView,
+  notionLinkResultView,
   folderTree,
   tagList,
+  endDateHint,
 };

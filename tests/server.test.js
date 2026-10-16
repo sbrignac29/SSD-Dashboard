@@ -17,6 +17,8 @@ const { openDatabase } = require('../src/db');
 const { scanAndSave } = require('../src/jobs/scanAndSave');
 const { createApp } = require('../src/server');
 const { createScanRunner, overallPercent } = require('../src/web/scanRunner');
+const { createNotionSyncer } = require('../src/notion/sync');
+const { fakeNotion, ownersBoard, offlineError } = require('./fakeNotion');
 
 const DAY = 24 * 60 * 60 * 1000;
 const GB = 1e9;
@@ -48,10 +50,11 @@ function snapshot(dir) {
   return result;
 }
 
-function configFor({ working = ssd, lib = library } = {}) {
+function configFor({ working = ssd, lib = library, notionToken = '' } = {}) {
   return withDefaults({
     drives: { working, library: lib, archive: '' },
     folders: { ignore: [], shared: ['Resolve Project Library'], containers: ['NCHS Football'], keepPinned: [] },
+    notion: { token: notionToken },
   });
 }
 
@@ -77,19 +80,22 @@ let dbCount = 0;
 // Starts a server on a free port with its own empty database.
 //   config       – the settings the server sees
 //   scanAndSave  – optionally a fake (e.g. one that waits, to look at progress)
-async function startServer({ config = configFor(), libraryUsedPercent, scanAndSave: scanStep } = {}) {
+//   notion       – a fake Notion client (tests/fakeNotion.js); never the real one
+async function startServer({ config = configFor(), libraryUsedPercent, scanAndSave: scanStep, notion = fakeNotion().client } = {}) {
   dbCount += 1;
   const db = openDatabase({ file: path.join(base, `server-${dbCount}.db`) });
-  const runner = createScanRunner({ db, getConfig: () => config, scanAndSave: scanStep, log: { error() {} } });
-  const app = createApp({ db, runner, getConfig: () => config, getSpaces: fakeSpaces(libraryUsedPercent) });
+  const quiet = { error() {} };
+  const syncer = createNotionSyncer({ db, getConfig: () => config, makeClient: () => notion, log: quiet });
+  const runner = createScanRunner({ db, getConfig: () => config, scanAndSave: scanStep, notion: syncer, log: quiet });
+  const app = createApp({ db, runner, notion: syncer, getConfig: () => config, getSpaces: fakeSpaces(libraryUsedPercent) });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
-  const call = async (route, { method = 'GET', json = method === 'POST' } = {}) => {
+  const call = async (route, { method = 'GET', json = method === 'POST', body = {} } = {}) => {
     const response = await fetch(url + route, {
       method,
       headers: json ? { 'Content-Type': 'application/json' } : {},
-      body: method === 'POST' ? '{}' : undefined,
+      body: method === 'POST' ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
     });
     const type = response.headers.get('content-type') ?? '';
     return { status: response.status, body: type.includes('json') ? await response.json() : await response.text() };
@@ -155,7 +161,7 @@ describe('starting the server', () => {
   it('serves the pages and the two browser libraries', async () => {
     const server = await startServer();
     try {
-      for (const page of ['/', '/project.html', '/library.html', '/styles.css', '/js/common.js']) {
+      for (const page of ['/', '/project.html', '/library.html', '/notion.html', '/styles.css', '/js/common.js', '/js/notion.js']) {
         assert.equal((await server.call(page)).status, 200, page);
       }
       assert.equal((await server.call('/vendor/alpine.min.js')).status, 200);
@@ -378,14 +384,15 @@ describe('the API after a scan', () => {
       body.scoring.checks.map((c) => [c.id, c.state]),
       [
         ['finished', 'pass'],
+        ['notion', 'na'],
         ['untouched', 'pass'],
         ['newer-footage', 'pass'],
         ['dates', 'pass'],
         ['readable', 'pass'],
         ['pinned', 'pass'],
-        ['notion', 'na'],
       ],
     );
+    assert.equal(body.notion.link, null, 'not linked to Notion yet');
     const points = body.scoring.parts.reduce((sum, part) => sum + part.value * part.weight, 0);
     assert.equal(Math.round(points * 10) / 10, body.scoring.score);
     assert.equal(body.scoring.stale, false);
@@ -445,6 +452,123 @@ describe('a Library with room', () => {
   });
 });
 
+describe('Notion', () => {
+  it('without a token: "Notion: not connected", and the rest of the dashboard works', async () => {
+    const { client, board } = fakeNotion({ pages: ownersBoard() });
+    const server = await startServer({ notion: client });
+    try {
+      const { final } = await server.scanNow();
+      assert.equal(final.outcome, 'saved');
+      assert.equal(final.notion.state, 'skipped');
+      const { body: notion } = await server.call('/api/notion');
+      assert.deepEqual([notion.headline, notion.state], ['Notion: not connected', 'no-token']);
+      const refresh = await server.call('/api/notion/sync', { method: 'POST' });
+      assert.deepEqual([refresh.status, refresh.body.ok, refresh.body.reason], [200, false, 'not-configured']);
+      assert.match(refresh.body.message, /Notion: not connected/);
+      assert.equal(board.calls.length, 0, 'nothing was sent to Notion');
+      const { body: list } = await server.call('/api/projects');
+      assert.ok(list.projects.every((p) => p.status === null), 'Status column: — for every project');
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('Refresh Notion, then Confirm a link: the project is Done in Notion', async () => {
+    const { client, board } = fakeNotion({ pages: ownersBoard() });
+    const server = await startServer({ config: configFor({ notionToken: 'test-token' }), notion: client });
+    try {
+      await server.scanNow();
+      board.calls.length = 0;
+      const refresh = await server.call('/api/notion/sync', { method: 'POST' });
+      assert.deepEqual([refresh.body.ok, refresh.body.pageCount, refresh.body.notion.headline], [true, 10, 'Notion: connected']);
+
+      const { body: links } = await server.call('/api/notion/links');
+      assert.equal(links.pages.length, 10);
+      const fresh = links.rows.find((r) => r.name === 'Fresh Edit');
+      assert.ok(fresh, 'unlinked folders are listed');
+
+      const page = links.pages.find((p) => p.title === 'Day in the Life Video'); // status Done
+      const confirm = await server.call('/api/notion/links', {
+        method: 'POST',
+        body: { projectIds: [fresh.id], action: 'confirm', pageId: page.pageId },
+      });
+      assert.equal(confirm.status, 200);
+      assert.match(confirm.body.message, /Linked "Fresh Edit" to "Day in the Life Video"/);
+
+      const { body: detail } = await server.call(`/api/projects/${fresh.id}`);
+      assert.equal(detail.notion.link, 'confirmed');
+      assert.equal(detail.scoring.checks.find((c) => c.id === 'notion').state, 'pass');
+      assert.equal(detail.scoring.parts.find((p) => p.id === 'done').value, 100);
+      // Edited 2 days ago: finished now, but not Ready until it's been left alone.
+      assert.equal(detail.scoring.tag, 'check');
+
+      const { body: unlinked } = await server.call('/api/projects?notion=unlinked');
+      assert.ok(!unlinked.projects.some((p) => p.id === fresh.id));
+      const { body: all } = await server.call('/api/projects');
+      assert.equal(all.projects.find((p) => p.id === fresh.id).status, 'Done');
+
+      // Only the two read calls ever reached "Notion".
+      assert.deepEqual([...new Set(board.calls.map((c) => c.name))].sort(), ['dataSources.query', 'dataSources.retrieve']);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('Scan now also refreshes Notion; loading the pages never does', async () => {
+    const { client, board } = fakeNotion({ pages: ownersBoard() });
+    const server = await startServer({ config: configFor({ notionToken: 'test-token' }), notion: client });
+    try {
+      // Starting the server and opening every page reads nothing from Notion.
+      for (const route of ['/', '/notion.html', '/api/notion', '/api/notion/links', '/api/projects', '/api/summary']) {
+        await server.call(route);
+      }
+      assert.equal(board.calls.length, 0, 'no background sync');
+
+      const { final } = await server.scanNow();
+      assert.equal(final.notion.state, 'synced');
+      assert.match(final.message, /Notion: Read 10 pages/);
+      assert.ok(board.calls.length > 0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('Notion unreachable: the scan still saves, and the page says "not connected"', async () => {
+    const { client, board } = fakeNotion({ pages: ownersBoard() });
+    board.fail = offlineError();
+    const server = await startServer({ config: configFor({ notionToken: 'test-token' }), notion: client });
+    try {
+      const { final } = await server.scanNow();
+      assert.equal(final.outcome, 'saved', 'the drives were scanned and saved');
+      assert.equal(final.notion.state, 'failed');
+      assert.match(final.notion.message, /Notion: not connected\. Can't reach Notion/);
+      const { body } = await server.call('/api/notion');
+      assert.deepEqual([body.headline, body.state], ['Notion: not connected', 'failed']);
+      assert.equal((await server.call('/api/projects')).status, 200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('bad link requests get clear answers and change nothing', async () => {
+    const server = await startServer();
+    try {
+      await server.scanNow();
+      const id = (await server.call('/api/projects')).body.projects[0].id;
+      const post = (body) => server.call('/api/notion/links', { method: 'POST', body });
+      assert.equal((await post({ projectIds: [id], action: 'confirm', pageId: 'nope' })).status, 409);
+      assert.equal((await post({ projectIds: [id], action: 'explode' })).status, 400);
+      assert.equal((await post({ projectIds: 'all', action: 'none' })).status, 400);
+      assert.equal((await post({ projectIds: [999999], action: 'none' })).status, 404);
+      assert.equal((await post('[1, 2')).status, 400, 'broken JSON');
+      assert.equal((await server.call('/api/notion/links?show=everything')).status, 400);
+      assert.ok((await server.call('/api/projects')).body.projects.every((p) => p.notionLink === null));
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
 describe('guards', () => {
   it('buttons (POST) must send JSON, so other websites cannot press them', async () => {
     const server = await startServer();
@@ -452,6 +576,10 @@ describe('guards', () => {
       const { status } = await server.call('/api/scan', { method: 'POST', json: false });
       assert.equal(status, 415);
       assert.equal(server.db.prepare('SELECT COUNT(*) AS n FROM scans').get().n, 0, 'nothing was scanned');
+      // The same for Refresh Notion and the Link buttons.
+      assert.equal((await server.call('/api/notion/sync', { method: 'POST', json: false })).status, 415);
+      assert.equal((await server.call('/api/notion/links', { method: 'POST', json: false })).status, 415);
+      assert.equal(server.db.prepare('SELECT COUNT(*) AS n FROM notion_syncs').get().n, 0);
     } finally {
       await server.stop();
     }

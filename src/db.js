@@ -200,6 +200,56 @@ const MIGRATIONS = [
   );
   INSERT INTO settings (id) VALUES (1);
   `,
+
+  // 5 — Phase 4, Notion:
+  //   - notion_pages: a copy of the pages in your Notion Projects database,
+  //     refreshed by each sync, so the dashboard still knows them (and their
+  //     statuses) when Notion can't be reached. Rows are never deleted: a page
+  //     that's gone from Notion gets in_last_sync = 0.
+  //   - notion_syncs: one row per sync, like scans (failed ones too).
+  //   - projects gets the link you confirmed on the Link to Notion page, plus a
+  //     copy of that page's title/status/end date from the last sync. Scoring
+  //     reads notion_status from here (every scoring fact is a column, see
+  //     rescoreProjects). A rescan's upsert doesn't touch these columns, so
+  //     links survive rescans, like pins.
+  //     link_source: NULL = not decided yet, 'confirmed' = linked to
+  //     notion_page_id, 'none' = you said this folder has no Notion page.
+  `
+  CREATE TABLE notion_pages (
+    page_id      TEXT    PRIMARY KEY,         -- Notion's id for the page, e.g. '1a2b3c4d-...'
+    title        TEXT    NOT NULL,            -- its "Project name"
+    status       TEXT,                        -- its "Status" (empty if not set)
+    end_date     TEXT,                        -- its "End date" as Notion gives it: '2026-10-03' (or with a time)
+    url          TEXT,                        -- the page's address, to open it in Notion
+    last_edited  TEXT,                        -- when the page was last edited in Notion
+    first_seen   TEXT    NOT NULL,            -- first sync that found it
+    last_synced  TEXT    NOT NULL,            -- latest sync that found it
+    in_last_sync INTEGER NOT NULL DEFAULT 1 CHECK (in_last_sync IN (0, 1))  -- 0 = deleted, or no longer shared
+  );
+
+  CREATE TABLE notion_syncs (
+    id             INTEGER PRIMARY KEY,
+    started_at     TEXT    NOT NULL,
+    finished_at    TEXT    NOT NULL,
+    status         TEXT    NOT NULL CHECK (status IN ('finished', 'failed')),
+    triggered_by   TEXT    NOT NULL CHECK (triggered_by IN ('button', 'scan')),  -- Refresh Notion, or Scan now
+    data_source_id TEXT,                      -- which Notion data source was read
+    page_count     INTEGER,                   -- pages read (empty if it failed)
+    error          TEXT                       -- why it failed, in plain words
+  );
+
+  ALTER TABLE projects ADD COLUMN notion_page_id   TEXT REFERENCES notion_pages (page_id);  -- the confirmed page
+  ALTER TABLE projects ADD COLUMN notion_title     TEXT;  -- that page's title ...
+  ALTER TABLE projects ADD COLUMN notion_status    TEXT;  -- ... status (scoring reads this) ...
+  ALTER TABLE projects ADD COLUMN notion_end_date  TEXT;  -- ... and end date, as of:
+  ALTER TABLE projects ADD COLUMN notion_synced_at TEXT;
+  ALTER TABLE projects ADD COLUMN link_decided_at  TEXT;  -- when you pressed Confirm or No Notion page
+  ALTER TABLE projects ADD COLUMN link_source      TEXT CHECK (
+    (link_source IS NULL AND notion_page_id IS NULL) OR
+    (link_source = 'confirmed' AND notion_page_id IS NOT NULL) OR
+    (link_source = 'none' AND notion_page_id IS NULL)
+  );
+  `,
 ];
 
 // The drives whose folders can be saved: the Working SSD (scored for Move 1)
@@ -424,6 +474,15 @@ function rowToProject(row) {
     firstSeenMs: fromIso(row.first_seen),
     lastScannedMs: fromIso(row.last_scanned),
     missing: row.missing === 1,
+    // Notion (Phase 4): the link you confirmed, and the page's facts as of the
+    // last sync. Scoring reads notionStatus (donePart in score.js).
+    notionLink: row.link_source ?? null, // 'confirmed' | 'none' | null (not decided yet)
+    notionPageId: row.notion_page_id ?? null,
+    notionTitle: row.notion_title ?? null,
+    notionStatus: row.link_source === 'confirmed' ? (row.notion_status ?? null) : null,
+    notionEndDate: row.notion_end_date ?? null,
+    notionSyncedMs: fromIso(row.notion_synced_at ?? null),
+    linkDecidedMs: fromIso(row.link_decided_at ?? null),
   };
 }
 
@@ -473,6 +532,7 @@ function factsToRow(facts, scannedAtIso, drive) {
 //   pinned_keep – your pin survives every rescan
 //   first_seen  – stays the date it was first found
 //   client      – COALESCE keeps a client that's already filled in
+//   notion_* and link_source – your Notion link survives every rescan
 // Scores are cleared here and recalculated right after (same transaction).
 const UPSERT_PROJECT_SQL = `
   INSERT INTO projects (
@@ -829,6 +889,194 @@ function pinnedPathKeys(db) {
   );
 }
 
+// --- Notion (Phase 4) ---------------------------------------------------------
+//
+// Notion is only ever READ (src/notion/sync.js). What it said is saved here,
+// so the dashboard keeps working with the last synced statuses when Notion
+// can't be reached.
+
+function rowToNotionPage(row) {
+  return {
+    pageId: row.page_id,
+    title: row.title,
+    status: row.status,
+    endDate: row.end_date,
+    url: row.url,
+    lastEditedMs: fromIso(row.last_edited),
+    firstSeenMs: fromIso(row.first_seen),
+    lastSyncedMs: fromIso(row.last_synced),
+    inLastSync: row.in_last_sync === 1,
+  };
+}
+
+// Saves one successful sync: every page read from Notion, a fresh copy of the
+// title/status/end date on each linked project, a notion_syncs row, and new
+// scores. One transaction, like saveScan: all of it, or none of it.
+//   pages – [{ pageId, title, status, endDate, url, lastEdited }] from sync.js
+// Returns { syncId, pageCount, gone (pages no longer in Notion), projects (re-scored) }.
+function saveNotionSync(db, config, { pages, startedAt, finishedAt = Date.now(), triggeredBy, dataSourceId }) {
+  const syncedIso = toIso(startedAt);
+  const save = db.transaction(() => {
+    const before = db.prepare('SELECT page_id FROM notion_pages WHERE in_last_sync = 1').all().map((row) => row.page_id);
+    // Every page starts as "not in this sync"; the pages read are switched back on.
+    db.prepare('UPDATE notion_pages SET in_last_sync = 0').run();
+    const upsert = db.prepare(`
+      INSERT INTO notion_pages (page_id, title, status, end_date, url, last_edited, first_seen, last_synced, in_last_sync)
+      VALUES (@page_id, @title, @status, @end_date, @url, @last_edited, @synced_at, @synced_at, 1)
+      ON CONFLICT (page_id) DO UPDATE SET
+        title = excluded.title,
+        status = excluded.status,
+        end_date = excluded.end_date,
+        url = excluded.url,
+        last_edited = excluded.last_edited,
+        last_synced = excluded.last_synced,
+        in_last_sync = 1
+    `);
+    for (const page of pages) {
+      upsert.run({
+        page_id: page.pageId,
+        title: page.title ?? '',
+        status: page.status ?? null,
+        end_date: page.endDate ?? null,
+        url: page.url ?? null,
+        last_edited: page.lastEdited ?? null,
+        synced_at: syncedIso,
+      });
+    }
+    const readNow = new Set(pages.map((page) => page.pageId));
+
+    // Linked projects get the page's new title/status/end date. A page that
+    // wasn't in this sync (deleted, or no longer shared) keeps its last values:
+    // the project page says so.
+    db.prepare(
+      `UPDATE projects SET
+         notion_title = p.title, notion_status = p.status, notion_end_date = p.end_date, notion_synced_at = p.last_synced
+       FROM notion_pages AS p
+       WHERE projects.notion_page_id = p.page_id AND p.in_last_sync = 1`,
+    ).run();
+
+    const { lastInsertRowid } = db
+      .prepare(
+        `INSERT INTO notion_syncs (started_at, finished_at, status, triggered_by, data_source_id, page_count)
+         VALUES (?, ?, 'finished', ?, ?, ?)`,
+      )
+      .run(syncedIso, toIso(finishedAt), triggeredBy, dataSourceId ?? null, pages.length);
+
+    return {
+      syncId: Number(lastInsertRowid),
+      pageCount: pages.length,
+      gone: before.filter((pageId) => !readNow.has(pageId)).length,
+      projects: rescoreProjects(db, config),
+    };
+  });
+  return save.immediate(); // claim the write first (see saveScan)
+}
+
+// Records a sync that failed (no internet, wrong token, ...). Nothing else
+// changes: the last synced statuses stay in use.
+function recordFailedNotionSync(db, { startedAt, finishedAt = Date.now(), error, triggeredBy, dataSourceId }) {
+  db.prepare(
+    `INSERT INTO notion_syncs (started_at, finished_at, status, triggered_by, data_source_id, error)
+     VALUES (?, ?, 'failed', ?, ?, ?)`,
+  ).run(toIso(startedAt), toIso(finishedAt), triggeredBy, dataSourceId ?? null, String(error?.message ?? error));
+}
+
+// The latest sync ('finished' or 'failed', or either), or undefined.
+function latestNotionSync(db, status) {
+  const row = status
+    ? db.prepare('SELECT * FROM notion_syncs WHERE status = ? ORDER BY id DESC LIMIT 1').get(status)
+    : db.prepare('SELECT * FROM notion_syncs ORDER BY id DESC LIMIT 1').get();
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    startedMs: fromIso(row.started_at),
+    finishedMs: fromIso(row.finished_at),
+    status: row.status,
+    triggeredBy: row.triggered_by,
+    dataSourceId: row.data_source_id,
+    pageCount: row.page_count,
+    error: row.error,
+  };
+}
+
+// One synced Notion page by its id, or undefined.
+function getNotionPage(db, pageId) {
+  const row = db.prepare('SELECT * FROM notion_pages WHERE page_id = ?').get(pageId);
+  return row ? rowToNotionPage(row) : undefined;
+}
+
+// How many Working SSD projects are linked, marked "No Notion page", or not
+// decided yet: { linked, none, todo }.
+function notionLinkCounts(db) {
+  const counts = { linked: 0, none: 0, todo: 0 };
+  const rows = db
+    .prepare(
+      `SELECT link_source, COUNT(*) AS n FROM projects
+       WHERE drive = 'working' AND kind = 'project' AND missing = 0 GROUP BY link_source`,
+    )
+    .all();
+  for (const row of rows) counts[{ confirmed: 'linked', none: 'none' }[row.link_source] ?? 'todo'] += row.n;
+  return counts;
+}
+
+// Every Notion page ever synced, A to Z (including ones gone from Notion).
+function listNotionPages(db) {
+  return db.prepare('SELECT * FROM notion_pages ORDER BY title COLLATE NOCASE').all().map(rowToNotionPage);
+}
+
+const LINK_ACTIONS = ['confirm', 'none', 'clear'];
+
+// The Link to Notion page's buttons. For one or more Working SSD projects:
+//   'confirm' – link them to the Notion page `pageId`
+//   'none'    – No Notion page: never suggest one again
+//   'clear'   – undo either: back to "not linked yet"
+// Then re-scores (a Done page makes its project finished), like a pin.
+// Returns { result: 'ok', projects (re-scored) }, or { result, problem } when
+// nothing was changed: 'bad-request' | 'not-found' | 'not-on-working' | 'unknown-page'.
+function setNotionLinks(db, config, { projectIds, action, pageId = null, now = Date.now() }) {
+  if (!LINK_ACTIONS.includes(action)) return { result: 'bad-request', problem: `"action" must be one of: ${LINK_ACTIONS.join(', ')}.` };
+  if (!Array.isArray(projectIds) || projectIds.length === 0 || !projectIds.every((id) => Number.isInteger(id) && id > 0)) {
+    return { result: 'bad-request', problem: '"projectIds" must be a list of project ids.' };
+  }
+  const projects = [...new Set(projectIds)].map((id) => getProject(db, id));
+  if (projects.some((p) => !p)) return { result: 'not-found', problem: "There's no project with that id." };
+  if (projects.some((p) => p.drive !== 'working' || p.kind !== 'project' || p.missing)) {
+    return {
+      result: 'not-on-working',
+      problem: 'Only projects on the Working SSD can be linked to Notion (not shared folders, or folders no longer there).',
+    };
+  }
+  let page = null;
+  if (action === 'confirm') {
+    page = typeof pageId === 'string' ? db.prepare('SELECT * FROM notion_pages WHERE page_id = ?').get(pageId) : undefined;
+    if (!page) return { result: 'unknown-page', problem: "That Notion page isn't in the last sync. Press Refresh Notion, then try again." };
+  }
+
+  const update = db.prepare(`
+    UPDATE projects SET
+      link_source = @link_source, notion_page_id = @page_id, notion_title = @title, notion_status = @status,
+      notion_end_date = @end_date, notion_synced_at = @synced_at, link_decided_at = @decided_at
+    WHERE id = @id
+  `);
+  const values = {
+    link_source: { confirm: 'confirmed', none: 'none', clear: null }[action],
+    page_id: page?.page_id ?? null,
+    title: page?.title ?? null,
+    status: page?.status ?? null,
+    end_date: page?.end_date ?? null,
+    synced_at: page?.last_synced ?? null,
+    decided_at: action === 'clear' ? null : toIso(now),
+  };
+  const scored = db
+    .transaction(() => {
+      for (const p of projects) update.run({ ...values, id: p.id });
+      return rescoreProjects(db, config);
+    })
+    .immediate();
+  const ids = new Set(projects.map((p) => p.id));
+  return { result: 'ok', projects: scored.filter((p) => ids.has(p.id)) };
+}
+
 module.exports = {
   DEFAULT_DB_PATH,
   DatabaseError,
@@ -849,6 +1097,13 @@ module.exports = {
   pinnedPathKeys,
   readSavedSettings,
   writeSavedSettings,
+  saveNotionSync,
+  recordFailedNotionSync,
+  latestNotionSync,
+  listNotionPages,
+  getNotionPage,
+  notionLinkCounts,
+  setNotionLinks,
   MIGRATIONS,
   SAVED_DRIVES,
 };

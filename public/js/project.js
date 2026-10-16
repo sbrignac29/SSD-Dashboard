@@ -1,7 +1,8 @@
 'use strict';
 
-// The project page (project.html?id=12): why a project got its tag, the score
-// part by part, its size by file type, its folder tree, and the Pin button.
+// The project page (project.html?id=12): why a project got its tag (including
+// "Done in Notion"), the score part by part, its Notion page, its size by file
+// type, its folder tree, and the Pin button.
 //
 // The "?id=12" part of the address says which project; the page asks the
 // server for it with GET /api/projects/12, and the Pin button sends
@@ -83,6 +84,15 @@ function projectPage() {
       if (p.hasFinalExport) return `Final — ${p.finalExportFile}`;
       if (p.hasExport) return `Drafts only — e.g. ${p.exportExampleFile}`;
       return 'None found in this folder';
+    },
+
+    // When the Notion facts are from, and a warning if the page has gone.
+    notionSyncText() {
+      const n = this.data.notion;
+      if (n.pageGone) {
+        return "This page wasn't in the last sync (deleted in Notion, or no longer shared): the status shown is the last one read.";
+      }
+      return n.syncedAt ? `As of the Notion sync on ${Dashboard.formatDateTime(n.syncedAt)}` : '';
     },
 
     chartLabel() {

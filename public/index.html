@@ -25,6 +25,7 @@
         <nav aria-label="Pages">
           <a href="/" aria-current="page">Overview</a>
           <a href="library.html">Done HDD</a>
+          <a href="notion.html">Link to Notion</a>
           <a href="settings.html">Settings</a>
         </nav>
         <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
@@ -102,9 +103,25 @@
               x-text="summary && summary.lastScan ? `(${formatAgo(summary.lastScan.at)})` : ''"></span>
           </p>
           <p class="muted small">
-            Reads the Working SSD and the Library HDD, whichever are plugged in.
-            It never changes anything on them.
+            Reads the Working SSD and the Library HDD, whichever are plugged in, then your Notion statuses.
+            It never changes anything on them (or in Notion).
           </p>
+
+          <!-- Notion: connected or not, plainly; Refresh Notion reads it now. -->
+          <div class="notion-box" aria-label="Notion">
+            <p>
+              <span :class="notion && notion.connected ? 'connected-dot' : 'not-connected'"
+                x-text="notion ? notion.headline : 'Notion: …'"></span>
+            </p>
+            <p class="small muted" x-show="notion" x-text="notionDetail(notion)"></p>
+            <div class="notion-actions">
+              <button type="button" class="button" @click="refreshNotion()" :disabled="notionBusy || scan.running"
+                x-text="notionBusy ? 'Reading Notion…' : 'Refresh Notion'"></button>
+              <a href="notion.html" x-show="notion && notion.counts.todo > 0"
+                x-text="notion ? `${plural(notion.counts.todo, 'folder')} not linked yet →` : ''"></a>
+            </div>
+            <p class="small" aria-live="polite" x-show="notionNote" x-text="notionNote"></p>
+          </div>
         </section>
       </div>
 
@@ -198,6 +215,19 @@
               <input type="date" aria-label="To" x-model="filters.to" @change="filtersChanged()" />
             </div>
           </div>
+          <label class="filter-group">
+            <span class="filter-label">Notion</span>
+            <select x-model="filters.notion" @change="filtersChanged()">
+              <option value="" :selected="filters.notion === ''">All</option>
+              <option value="unlinked" :selected="filters.notion === 'unlinked'"
+                x-text="list ? `Not linked yet (${list.notionCounts.unlinked})` : 'Not linked yet'"></option>
+              <option value="no-page" :selected="filters.notion === 'no-page'"
+                x-text="list ? `No Notion page (${list.notionCounts['no-page']})` : 'No Notion page'"></option>
+              <template x-for="st in (list ? list.statuses : [])" :key="st">
+                <option :value="`status:${st}`" :selected="filters.notion === `status:${st}`" x-text="`Status: ${st}`"></option>
+              </template>
+            </select>
+          </label>
           <button type="button" class="link-button" x-show="hasFilters()" @click="clearFilters()">Clear filters</button>
         </div>
 
@@ -225,7 +255,8 @@
                   <td data-label="Client" :class="{ 'phone-hide': !p.client }" x-text="p.client || '—'"></td>
                   <td data-label="Size" class="right num" x-text="formatBytes(p.sizeBytes)"></td>
                   <td data-label="Last edited" class="num" x-text="formatDate(p.lastEdited)"></td>
-                  <td data-label="Status" class="phone-hide" x-text="p.status || '—'" title="Notion status: connects in Phase 4"></td>
+                  <td data-label="Status" :class="{ 'phone-hide': !p.status }" :title="statusTitle(p)"
+                    x-text="p.status || '—'"></td>
                   <td data-label="Tag" class="cell-tag">
                     <div>
                       <span class="tag" :class="`tag-${p.tag}`">

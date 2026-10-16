@@ -23,6 +23,7 @@
         <nav aria-label="Pages">
           <a href="/">Overview</a>
           <a href="library.html">Done HDD</a>
+          <a href="notion.html">Link to Notion</a>
           <a href="settings.html">Settings</a>
         </nav>
         <button class="theme-button" type="button" data-theme-button>Theme: Auto</button>
@@ -171,8 +172,29 @@
                 </dd>
                 <dt>Export</dt>
                 <dd x-text="exportText()"></dd>
-                <dt>Notion status</dt>
-                <dd class="muted">— (connects in Phase 4)</dd>
+                <template x-if="data.notion">
+                  <dt>Notion</dt>
+                </template>
+                <template x-if="data.notion">
+                  <dd>
+                    <template x-if="data.notion.link === 'confirmed'">
+                      <span>
+                        <strong x-text="data.notion.status || 'No status'"></strong>
+                        <span class="tag tag-ready" style="margin-left: 6px" x-show="data.notion.doneInNotion">Done in Notion</span>
+                        <span class="check-detail" style="display: block">
+                          <span x-text="`“${data.notion.title}”`"></span>
+                          <span x-show="data.notion.endHint" x-text="` · ${data.notion.endHint}`"></span>
+                          <span x-show="data.notion.url"> · <a :href="data.notion.url" target="_blank" rel="noopener noreferrer">open in Notion ↗</a></span>
+                        </span>
+                        <span class="check-detail" style="display: block" x-text="notionSyncText()"></span>
+                      </span>
+                    </template>
+                    <span class="muted" x-show="data.notion.link === 'none'">No Notion page (you marked it)</span>
+                    <span class="muted" x-show="data.notion.link === null">Not linked yet</span>
+                    <a class="small" style="display: block" :href="`notion.html?id=${data.project.id}`"
+                      x-text="data.notion.link === null ? 'Link to a Notion page →' : 'Change →'"></a>
+                  </dd>
+                </template>
                 <dt>First seen</dt>
                 <dd x-text="formatDate(data.project.firstSeen)"></dd>
                 <dt>Last scanned</dt>

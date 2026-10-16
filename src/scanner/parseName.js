@@ -88,4 +88,15 @@ function parseProjectName(name) {
   return { subject: cleanSubject(original) || null, dateLabel: null, year: null, month: null, day: null };
 }
 
-module.exports = { parseProjectName };
+// The name with EVERY date taken out ("Parker Soccer 10-3 to 10-5" -> "Parker
+// Soccer to"). Used to match folders to Notion pages, where the date is
+// usually written differently on each side (or only on one of them).
+function removeDates(name) {
+  let text = String(name);
+  for (const pattern of DATE_PATTERNS) {
+    text = text.replace(pattern.regex, (...match) => (isValidDate(pattern.read(match)) ? ' ' : match[0]));
+  }
+  return text;
+}
+
+module.exports = { parseProjectName, removeDates };

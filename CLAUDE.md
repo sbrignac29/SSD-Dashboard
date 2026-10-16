@@ -3,7 +3,9 @@
 A local Node.js app that scans the owner's working SSD (video/photo production
 projects), finds projects that are finished, and tells the owner which to move
 off it — following their three-drive workflow. Since Phase 3 it's a dashboard in the
-browser (`npm start`, http://localhost:7744); the Terminal commands still work.
+browser (`npm start`, http://localhost:7744); the Terminal commands still work. Since
+Phase 4 it reads the owner's Notion "Projects" board (read-only) so a folder linked to
+a page whose Status is Done counts as finished.
 
 ```
 cards → Working SSD (2TB)        → Library HDD (2TB)              → Archive HDD (28TB)
@@ -33,6 +35,11 @@ might not know (route, schema, module, ...). Don't just hand over code.
   source, with explicit confirmation. Nothing is ever deleted from the Archive.
 - Nothing scans on its own: starting the server never scans; only the Scan now button
   does (the owner asked for "nothing scans until I press it"; there is no scheduled scan).
+- Notion is READ-ONLY: the app never writes to Notion (Phase 4). It reads only when the
+  owner presses Refresh Notion or Scan now — never at startup,
+  no background/scheduled sync. The owner's integration has only "Read content".
+- The Notion token lives only in `config.json` (gitignored), never in code or tracked files;
+  `config.example.json` keeps `"token": ""`.
 
 How this is enforced today:
 - The scanner only uses read-only calls (`readdir`, `lstat`, `stat`, `realpath`, `statfs`) and never follows symlinks.
@@ -64,7 +71,18 @@ How this is enforced today:
   (`fromThisMac`); other devices see the page read-only (`canEdit: false`).
   It serves only `public/` plus two fixed files from node_modules (`/vendor/...`, a Map, not a path).
 - The guard also trips on file-changing words inside plain strings (e.g. a message saying
-  "window stays open (…)" matched `open(`): reword the text, don't widen the allowlist.
+  "window stays open (…)" matched `open(`, an SQL comment "link (" and a key `{ link: … }`
+  matched `link`): reword the text, don't widen the allowlist.
+- `tests/safety.test.js` also fails if any Notion call other than `dataSources.retrieve` /
+  `dataSources.query` appears in `src/` (`.pages.update`, `.blocks.children.append`,
+  `.request(`, `.search(`, ...), or if anything but `src/notion/sync.js` loads
+  `@notionhq/client`. `sync.js` → `readOnly(client)` is the only door: two read calls.
+- `tests/secrets.test.js` fails if a Notion-token-looking string (`ntn_`/`secret_` + 30+
+  chars) is in any file git would commit (`git ls-files --cached --others --exclude-standard`;
+  a directory walk without git), and checks `.gitignore` lists `config.json` and the
+  example's token is `""`. Write fake tokens in tests in pieces (`'ntn' + '_' + ...`).
+- `POST /api/notion/sync`, `POST /api/notion/links` and Scan now's Notion step call
+  `assertSafeLocations()` before writing (the syncer does it per sync).
 - `tests/scan.test.js` and `tests/db.test.js` snapshot a fake drive before and after a scan
   (and a scan + save) and assert nothing changed.
 
@@ -104,7 +122,9 @@ How this is enforced today:
   Hidden/housekeeping files (`.DS_Store`, `._*`, `Thumbs.db`) count toward size but
   never toward "last edited" — Finder rewrites them just from browsing.
 - Scoring: `Score = 0.45*Done + 0.35*Age + 0.20*Size`, each part 0–100 (owner's formula).
-  - Done: 100 if Notion says Complete/Delivered, 70 if a final export exists, else 0
+  - Done: 100 if the CONFIRMED-linked Notion page's Status is in `doneStatuses` (`["Done"]`,
+    case-insensitive; `isDoneStatus`), else 70 if a final export exists, else 0. Unlinked
+    folders and "No Notion page" folders use the export rule (`notionStatus` is null).
   - Age: 0 if edited in the last 14 days, rising linearly to 100 at 120+ days
   - Size: project size relative to the largest ranked project
   - Score is rounded to 1 decimal before bucketing so the shown number and bucket agree.
@@ -126,7 +146,7 @@ How this is enforced today:
 - If the drive disappears mid-scan, the scan throws `ScanError` rather than reporting 0 GB.
 - Results are saved in SQLite (`data/dashboard.db`, via better-sqlite3), so reports and the
   dashboard load without rescanning. See "Storage" below.
-- Later phases: Notion sync for project status (Phase 4), moving projects through the owner's
+- Later phases: moving projects through the owner's
   existing Vericopy app (localhost:7743, a Node rsync UI with checksum verification) and a
   location log recording each hop (SSD → Library on date X → Archive on date Y) so any project
   can be found (Phase 5).
@@ -145,18 +165,30 @@ How this is enforced today:
   list), `POST /api/scan` (202 started, or 200 with `started: false` and `reason`
   already-running / nothing-connected — not an error) and `GET /api/scan` (progress, polled
   every 500 ms by the page), `GET /api/settings`, `POST /api/settings` (`{ values: { key: value } }`,
-  400 + reason when invalid) and `POST /api/settings/reset`.
+  400 + reason when invalid) `POST /api/settings/reset`.
+  Phase 4: `GET /api/notion` (`notionView`: state connected |
+  never-synced | failed | no-token | no-data-source, `headline` "Notion: connected" / "Notion:
+  not connected", last sync, link counts), `POST /api/notion/sync` (Refresh Notion; waits;
+  200 with `ok`/`message`, Notion problems aren't HTTP errors), `GET /api/notion/links`
+  (`show` todo|linked|none, `client`, `id`; rows with top-3 suggestions, every page from the
+  last sync) and `POST /api/notion/links` (`{projectIds, action: confirm|none|clear, pageId}`
+  → `setNotionLinks`; 400/404/409 `unknown-page`). `/api/projects` gained `notion`
+  (unlinked|no-page|linked) and `status` filters, `statuses`, `notionCounts`. POST bodies go
+  through `express.json({ limit: '200kb' })`; `Dashboard.api(path, { method, body })`.
 - Scan now (`src/web/scanRunner.js`): one run at a time; scans the Working SSD then the
   Library, each through `scanAndSave` (so failures still get a `failed` scans row), skipping a
   drive whose folder isn't there (no failed row: "Not connected" is not an error). The Archive
   is never scanned (only statfs): nothing reads its folders yet and walking 28 TB would make
   every scan slow. Progress % = files so far / that drive's last file count (else top-level
   folders done / total, from `onProgress`'s `foldersDone`/`foldersTotal`), drives weighted by
-  their last file counts.
+  their last file counts (capped at 99 while running). After the drives, Scan now syncs Notion
+  (`status().notion`: syncing | synced | failed | skipped) if a token is set. A Notion failure
+  doesn't change the scan's outcome.
 - Tags (plain language, shown before the score) come from the SAVED bucket: Ready → "Ready to
   move to HDD", Review → "Check first", Keep → "Keep on SSD", Keep + pinned (database or
   config) → "Pinned to SSD". Each row has a one-line reason (`shortReason`, date-based, e.g.
-  "can be ready Oct 24"). Status shows "—" until Notion (Phase 4).
+  "can be ready Oct 24"; Ready says "Done in Notion · …" or "Final export · …"). Status
+  shows the linked page's Notion status, "—" if not linked.
 - The project page recomputes the score parts with `scoreProject` (same `now` = last scan's
   start, same largest project) to show each part; if that differs from the saved score,
   config.json changed since, and the page says "press Scan now" (`stale`).
@@ -167,7 +199,32 @@ How this is enforced today:
   `drive_free_bytes`).
 - Unplugged drives are never errors or empty screens: "Not connected" + last scanned date (+
   how full at that scan), and every page still shows the saved results.
-- Browser side (`public/`): plain HTML pages (`index.html`, `project.html?id=`, `library.html`, `settings.html`),
+- Notion (Phase 4, `src/notion/sync.js`): `@notionhq/client` 5 with `notionVersion:
+  '2025-09-03'` pinned, so rows are read from a DATA SOURCE (`notion.dataSourceId`,
+  `233517a5-0199-8028-a552-000b7d81cc6b`), not the database ID. A sync = `dataSources.retrieve`
+  (checks the configured column names/types: title; status or select; date) + paginated
+  `dataSources.query` (100/page, `next_cursor`), then `saveNotionSync` in one IMMEDIATE
+  transaction (upsert `notion_pages`, mark unseen `in_last_sync = 0`, copy title/status/end
+  date onto linked projects, `notion_syncs` row, re-score). Failures (offline `TypeError:
+  fetch failed`, `unauthorized`, `object_not_found`, ...) → `describeNotionError` plain text,
+  a `failed` notion_syncs row, nothing else changes. `createNotionSyncer` = one sync at a
+  time (a second press joins it); tests pass `makeClient` → `tests/fakeNotion.js` (records
+  calls, refuses anything but the two reads). Never the real API in tests.
+- Matching (`src/notion/match.js`): suggestions only, never auto-linking. Words after
+  `removeDates` (parseName.js), camelCase split, lowercase, apostrophes/punctuation dropped,
+  filler words, plural "s"; exact or near (prefix ≥4, edit distance 1 for ≥5 letters; 0.8)
+  pairs; IDF weights over all folder paths + page titles; score = 0.6·Dice + 0.4·(shared /
+  shorter name); ×0.8 if the page is linked to another folder; shown ≥ 20%, "likely" (pre-
+  picked) ≥ 50%. The owner's four examples are tests (`tests/notionMatch.test.js`).
+- Link to Notion page (`public/notion.html`, `js/notion.js`): to-do list best suggestion
+  first; top-3 radios + dropdown of all pages + Confirm + No Notion page; Undo; Linked / No
+  Notion page tabs with Change; `?id=` for one project (project page's "Change →"); per-
+  container bulk "No Notion page" skips folders with a likely match. Project page: "Done in
+  Notion" check (pass / info / na) right after "Finished", Done part's why, Notion facts with
+  End date hint (`endDateHint`: "Delivered Oct 3, 2026" / "Due …" / passed; plain days read
+  in local time; not scored), `pageGone`.
+- Browser side (`public/`): plain HTML pages (`index.html`, `project.html?id=`, `library.html`,
+  `notion.html`, `settings.html`),
   each one Alpine component (`public/js/*.js`, global functions loaded before Alpine with
   `defer`), shared helpers in `public/js/common.js` (`Dashboard.api`, formatters, theme,
   Chart.js size chart, folder tree built with `textContent`). Alpine 3 and Chart.js 4 are
@@ -209,7 +266,13 @@ How this is enforced today:
   Upserts are keyed by (drive, path); missing-marking, `latestScan(db, status, { drive })` and
   `listProjects(db, { drive })` are per drive and default to 'working', so the CLI report,
   pins and scoring only ever see Working SSD rows. Library rows are never scored (score/bucket
-  NULL) and can't be pinned (`togglePinById` → 'not-on-working').
+  NULL), can't be pinned (`togglePinById` → 'not-on-working') or linked to Notion.
+- Notion links live on the Working SSD `projects` row (`link_source` NULL = not decided,
+  'confirmed' + `notion_page_id`, or 'none'; a CHECK keeps them consistent and
+  `notion_page_id` REFERENCES `notion_pages`). The scan upsert never touches the notion_*
+  columns, so links survive rescans and missing/returning, like pins. `rowToProject` sets
+  `notionStatus` only for 'confirmed'. `setNotionLinks` (confirm | none | clear, one or many
+  ids) re-scores like a pin. `notion_pages` rows are never deleted (`in_last_sync = 0`).
 - `src/jobs/scanAndSave.js` is the one "scan, then save" path (`drive` 'working' by default, or
   'library'), used by `npm run scan` and Scan now. It also records the drive's
   statfs space on the scans row. A failed scan (e.g. `ScanError`, drive unplugged) is recorded
@@ -260,9 +323,9 @@ How this is enforced today:
   Library scans have their own rows (same path, `drive = 'library'`), so the Library's
   contents are known even while it's unplugged.
 
-Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`, 3 rebuilt
+Schema (version 5 — migration 1 made the tables, 2 added `newer_footage_file`, 3 rebuilt
 `projects` with `drive` + UNIQUE (drive, path) + `subfolders`, and added the scans columns,
-4 added `settings`):
+4 added `settings`, 5 added Notion: `notion_pages`, `notion_syncs`, and the projects link columns):
 - `projects`: `id`, `drive` (working/library/archive), `path` (relative to the drive top; UNIQUE
   with drive), `name`, `kind` (project/shared), `client` (container name for container shoots),
   `size_bytes`, `raw|proxy|export|cache|project|other_bytes`, `file_count`,
@@ -271,7 +334,13 @@ Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`,
   `incomplete`, `subfolders` (JSON: the biggest 300 folders ≤ 3 levels deep, biggest first —
   `{path, sizeBytes, fileCount}`; a folder is never smaller than its children, so the kept set
   has no gaps), `score`, `bucket`, `score_notes`, `pinned_keep`, `first_seen`, `last_scanned`,
-  `missing`.
+  `missing`, `notion_page_id` (→ notion_pages), `notion_title`, `notion_status` (scoring reads
+  it), `notion_end_date`, `notion_synced_at`, `link_decided_at`, `link_source`
+  (NULL | 'confirmed' | 'none').
+- `notion_pages`: `page_id` (PK), `title`, `status`, `end_date` (as Notion gives it), `url`,
+  `last_edited`, `first_seen`, `last_synced`, `in_last_sync`.
+- `notion_syncs`: `id`, `started_at`, `finished_at`, `status` (finished/failed), `triggered_by`
+  (button/scan), `data_source_id`, `page_count`, `error` (plain words).
 - `scans`: `id`, `started_at`, `finished_at`, `status` (finished/failed), `root`, `project_count`,
   `file_count`, `total_bytes`, `errors` (JSON list of messages), `drive` (working/library),
   `drive_total_bytes`, `drive_free_bytes` (statfs at the scan; NULL for older/failed scans).
@@ -292,8 +361,10 @@ Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`,
    disabled), Done HDD page (Library oldest first + Archive list past the limit). Library
    scans saved (migration 3). Settings page (migration 4): edit config from the browser,
    saved in the database.
-4. Notion sync (`src/notion/sync.js`): add `notion_status` as a migration, pass it to scoring
-   (`donePart` already reads `notionStatus`), and fill the table's Status column.
+4. **Done:** Notion (`src/notion/sync.js`, read-only): Refresh Notion + Scan now sync,
+   suggested folder ↔ page links confirmed on the Link to Notion page (`src/notion/match.js`),
+   Done in Notion → Done 100, Status column + "Not linked yet" filter, End date hint,
+   "Notion: not connected" with the last synced statuses kept (migration 5).
 5. Moves via Vericopy (`src/offload/vericopy.js`) + `archive_log` hops — only when explicitly
    asked. The dashboard's disabled "Move to HDD" / "Move to Archive" buttons are the place.
 
@@ -306,8 +377,8 @@ Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`,
 - Dependencies only when a phase needs them. Now: better-sqlite3 13 (ships Node-API prebuilt
   binaries, incl. darwin-arm64/x64, so no compiler and no rebuild after a Node upgrade),
   express 5 (async route errors reach the error handler), alpinejs 3 and chart.js 4 (browser
-  libraries, served from node_modules — no CDN). Phase 4 adds @notionhq/client. UI: plain
-  HTML + Alpine.js, no build step.
+  libraries, served from node_modules — no CDN), @notionhq/client 5 (Notion API 2025-09-03,
+  data sources). UI: plain HTML + Alpine.js, no build step.
 - Tests use Node's built-in runner (`node:test` + `node:assert/strict`), files in `tests/*.test.js`.
   `tests/server.test.js` runs the real Express app on port 0 over HTTP with fake drives in
   `data/.test-server-*` and fake drive sizes (`getSpaces`), and a gated fake `scanAndSave` to
@@ -319,7 +390,8 @@ Schema (version 4 — migration 1 made the tables, 2 added `newer_footage_file`,
 
 ## Commands
 
-- `npm start` — the dashboard at http://localhost:7744 (scans nothing until Scan now)
+- `npm start` — the dashboard at http://localhost:7744 (scans nothing until Scan now; reads
+  Notion only on Refresh Notion / Scan now)
 - `npm run scan` — scan the Working SSD, save to `data/dashboard.db`, and print the ranked
   table with drive space and the move plan
 - `npm run scan:details` — same, plus size by type, newest file, and score math per project
@@ -349,10 +421,13 @@ src/scanner/parseName.js pulls a date + subject out of folder names
 src/scanner/space.js     drive size/free space via statfs (read-only)
 src/scoring/score.js     the scoring formula + Ready/Review/Keep rule
 src/scoring/plan.js      the move plan (fits on Library? Library full?) and planArchiveMoves (Move 2)
-src/notion/, src/offload/   stubs for Phases 4 and 5
-public/                  the dashboard pages: index.html, project.html, library.html, settings.html, styles.css,
-                         js/common.js + one js/*.js per page
-tests/                   unit tests
+src/notion/sync.js       reads the Notion Projects data source (read-only), saves it, one sync at a time
+src/notion/match.js      suggests Notion pages for folders (word overlap, IDF-weighted)
+src/offload/             stub for Phase 5
+public/                  the dashboard pages: index.html, project.html, library.html, notion.html,
+                         settings.html,
+                         styles.css, js/common.js + one js/*.js per page
+tests/                   unit tests (tests/fakeNotion.js: the fake Notion client, not a test file)
 data/                    the only place the app writes: dashboard.db (gitignored)
 ```
 
@@ -370,7 +445,10 @@ data/                    the only place the app writes: dashboard.db (gitignored
   folder names.
 
 - Renaming a project folder looks like a new project: the old path is marked missing and the
-  new one starts fresh (its pin, `first_seen` and history don't carry over). Matching renames
+  new one starts fresh (its pin, Notion link, `first_seen` and history don't carry over).
+
+- Notion statuses are as of the last sync (Refresh Notion / Scan now). A page deleted or
+  unshared in Notion keeps its last status on the linked project (`pageGone` on the page). Matching renames
   (e.g. same size + files) is an idea for later.
 
 - The database tracks one Working SSD: rows are keyed by path from the drive top, so pointing

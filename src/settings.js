@@ -140,7 +140,7 @@ const SECTIONS = [
         label: 'Notion statuses that mean “done”',
         type: 'list',
         effect: 'rescore',
-        help: 'One per line. Used once Notion is connected (Phase 4).',
+        help: 'One per line. A folder linked to a Notion page with one of these statuses counts as finished.',
       },
     ],
   },
