@@ -14,8 +14,8 @@
 //
 // Scan now reads the Working SSD (saved and scored) and the Library HDD
 // (saved for the Done HDD page), whichever are connected, then refreshes the
-// Notion statuses (if there's a Notion token in config.json). The nightly scan
-// doesn't touch Notion: Notion is only read when you press a button. Unplugged drives
+// Notion statuses (if there's a Notion token in config.json). Notion is only
+// read when you press a button. Unplugged drives
 // are skipped, not reported as errors. The Archive is never read: nothing
 // needs its folders yet, and walking 28 TB would make every scan slow.
 //
@@ -88,8 +88,6 @@ function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, notion
     steps: [],
     notion: null,
   };
-  // The last full result per drive (used by the nightly job's log message).
-  const results = new Map();
 
   function message() {
     if (state.error) return state.error;
@@ -157,7 +155,6 @@ function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, notion
           }
         },
       });
-      results.set(step.drive, result);
       step.state = 'saved';
       step.summary = {
         projects: result.scan.projects.length,
@@ -178,13 +175,9 @@ function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, notion
     }
   }
 
-  // Scan now also refreshes Notion; the nightly scan never does.
+  // Scan now also refreshes Notion (after the drives).
   async function notionStep(config) {
     if (!notion) return;
-    if (state.trigger === 'nightly') {
-      state.notion = { state: 'skipped', message: 'Notion: not read by the nightly scan (only by Scan now or Refresh Notion)' };
-      return;
-    }
     if (!notionSettings(config).configured) {
       state.notion = { state: 'skipped', message: 'Notion: not connected (no token in config.json)' };
       return;
@@ -265,7 +258,6 @@ function createScanRunner({ db, getConfig, scanAndSave = realScanAndSave, notion
   return {
     start,
     status,
-    lastResult: (drive) => results.get(drive),
   };
 }
 

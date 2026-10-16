@@ -17,7 +17,9 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
-const { loadConfig, assertSafeLocations, assertAppNotInside, ConfigError } = require('../config');
+const { assertSafeLocations, assertAppNotInside, ConfigError } = require('../config');
+// config.json + the changes saved on the dashboard's Settings page.
+const { loadAppConfig } = require('../settings');
 const { scanDrive, folderKey, ScanError } = require('../scanner/scan');
 const { allDriveSpace } = require('../scanner/space');
 const { scoreProjects, byOffloadOrder } = require('../scoring/score');
@@ -137,7 +139,7 @@ async function main(argv) {
     return;
   }
 
-  const { config, source } = loadConfig();
+  const { config, source } = loadAppConfig();
   const root = options.root ? resolveUserPath(options.root) : config.drives.working;
   if (options.root) await assertRootExists(root);
   assertSafeLocations(config);

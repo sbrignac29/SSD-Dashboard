@@ -152,7 +152,7 @@ function overviewPage() {
       }
     },
 
-    // A scan already running (another tab, or the nightly scan) shows here too.
+    // A scan already running (another tab) shows here too.
     async checkScan() {
       try {
         this.scan = await api('/api/scan');

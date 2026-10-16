@@ -93,7 +93,7 @@ cp config.example.json config.json
 
 - `npm install` downloads the packages the app depends on into a folder
   called `node_modules`: **better-sqlite3** (talks to the database),
-  **node-cron** (runs the nightly scan on a schedule), **express** (the web
+  **express** (the web
   server behind the dashboard), and two libraries the dashboard page uses in
   your browser: **alpinejs** (fills the page with data and makes the buttons
   work) and **chart.js** (draws the size chart). The server hands those two to
@@ -128,7 +128,6 @@ SSD Offload Dashboard is running.
   Open http://localhost:7744 in your browser.
   Nothing is scanned until you press "Scan now".
   Notion: read when you press "Refresh Notion" or "Scan now" (never on its own).
-  Nightly scan: off (turn on with "nightlyScan": true under "server" in config.json).
   Settings: config.json · Database: data/dashboard.db
   Press Ctrl+C to stop.
 ```
@@ -208,6 +207,12 @@ the projects ready on the SSD would push it past, the banner lists what to move
 first to make room. It's a list only: copy them with Vericopy yourself until
 Phase 5.
 
+### The Settings page
+
+Change the drive paths, the Done HDD limits, the scoring numbers, the folder
+lists and the file types without opening `config.json`.
+Section 11 explains how it works.
+
 ### When a drive is unplugged
 
 Nothing breaks and nothing turns into an error. The drive's card says **Not
@@ -232,14 +237,6 @@ dashboard too and press Scan now or Pin (never move or delete: that code doesn't
 exist), so only do this on your home network, and set it back to `"127.0.0.1"`
 when you're done.
 
-### Nightly scans (off unless you turn them on)
-
-You asked for nothing to scan until you press the button, so the 2 AM scan is
-**off**. To turn it on, add `"nightlyScan": true` under `"server"` in
-`config.json` and restart `npm start`. It then scans both drives at 2:00 AM
-while `npm start` is running and the Mac is awake (shown live on the page, like
-a Scan now press). A missed or failed night is harmless.
-
 ### How the page and the server talk
 
 The dashboard is two programs. The **server** (`npm start`, `src/server.js`) runs
@@ -263,6 +260,9 @@ database at all. It asks the server for data at addresses that start with
 | `POST /api/notion/sync` | The Refresh Notion button: read the Projects board now |
 | `GET /api/notion/links` | The Link to Notion page: folders (`?show=todo`, `linked`, `none`) with their top 3 suggestions, and every Notion page |
 | `POST /api/notion/links` | Confirm a link, mark "No Notion page", or undo, for one or more folders (it sends `{"projectIds": [12], "action": "confirm", "pageId": "…"}`) |
+| `GET /api/settings` | The Settings page: every setting, its value, and its `config.json` value |
+| `POST /api/settings` | Save changed settings (in the database; checked first, nothing saved if anything is wrong) |
+| `POST /api/settings/reset` | Forget the Settings page's changes and use `config.json` again |
 
 `GET` means "give me"; `POST` means "do something". You can open the `GET`
 ones in your browser to see the raw answers, e.g.
@@ -408,7 +408,7 @@ When Notion is read:
 - **Refresh Notion** (Overview, and the Link to Notion page), and
 - **Scan now** (after the drives).
 
-Never on its own: not when the dashboard starts, and not by the nightly scan.
+Never on its own: not when the dashboard starts, and never on a schedule.
 
 ### Step 5: link your folders (the Link to Notion page)
 
@@ -519,10 +519,8 @@ deleted) is **marked missing, not deleted**, so its history stays.
 `npm run report` lists those under "No longer on the Working SSD". A scan
 that fails (SSD not plugged in) is recorded as failed and changes nothing else.
 
-**Nightly scans (off unless you turn them on).** See section 4: the 2 AM scan
-runs only with `npm start` running and `"nightlyScan": true` under `"server"` in
-`config.json`. Otherwise the database updates when you press Scan now or run
-`npm run scan`.
+**Nothing scans on its own.** The database updates only when you press Scan now
+or run `npm run scan`.
 
 ## 7. Reading the report
 
@@ -691,8 +689,8 @@ stays on your Mac.
    **Read-only matters:** if you edit something and leave it unsaved, DB Browser
    locks the file, and a scan or pin will stop with "The database is busy".
 3. **Look around:**
-   - **Database Structure** tab: the **schema**, i.e. the three tables
-     (`projects`, `scans`, `archive_log`) and their columns.
+   - **Database Structure** tab: the **schema**, i.e. the four tables
+     (`projects`, `scans`, `archive_log`, `settings`) and their columns.
      Since the dashboard, `projects` holds the Library's projects too: the
      `drive` column says which drive a row is on (`working` or `library`).
    - **Browse Data** tab: pick a table from the **Table** menu to see its rows.
@@ -795,6 +793,10 @@ scanned), `project_count`, `file_count`, `total_bytes`, `errors` (the warnings,
 or why it failed, as a JSON list), and `drive_total_bytes` / `drive_free_bytes`
 (how full the drive was, so the dashboard can show it while it's unplugged).
 
+**`settings`**: one row. `overrides` holds what you saved on the Settings page,
+as JSON (e.g. `{"ageDays": {"recent": 21, "max": 120}}`), and `updated_at` when.
+`{}` means nothing is changed there: everything comes from `config.json`.
+
 **`notion_pages`**: one row per page on your Notion Projects board, as of the
 last sync: `page_id`, `title`, `status`, `end_date`, `url`, `last_edited`,
 `first_seen`, `last_synced`, and `in_last_sync` (0 = deleted in Notion, or no
@@ -829,7 +831,34 @@ to leave.
   the next `npm start` or `npm run scan` makes a new one. You lose your pins,
   the scan history, and the "no longer on the Working SSD" list.
 
-## 11. Settings (`config.json`)
+## 11. Settings (the Settings page, or `config.json`)
+
+**The easy way:** open the dashboard (`npm start`) and click **Settings** in the
+top bar. Each setting has a short explanation and says when it takes effect:
+scores and drive limits change as soon as you press **Save**; folder and
+file-type changes show at the next **Scan now**. If something doesn't fit (say,
+the weights don't add up to 1), nothing is saved and the page tells you what to fix.
+
+How it works, in case you wonder where things go:
+- The app never edits `config.json` (it only ever writes inside `data/`). What
+  you save on the Settings page is kept in the database, `data/dashboard.db`
+  (the `settings` table), and wins over `config.json`.
+- Only the values you change there are saved. Everything else keeps following
+  `config.json`, so the two can be mixed. A changed setting shows **Changed
+  here** and its `config.json` value, with a **Use config.json value** link.
+- **Use config.json for everything** (bottom of the page) forgets all the
+  page's changes. `config.json` itself is untouched.
+- `npm run scan`, `npm run report` and `npm run pin` use the same settings as
+  the dashboard (the scan prints e.g. `Settings: config.json + 2 changes from
+  the Settings page`).
+- `server.port` and `server.host` are only shown there: change them in
+  `config.json` and restart `npm start`. If you open the dashboard to your phone
+  (`"host": "0.0.0.0"`), the phone can look at the settings but only this Mac
+  can change them.
+- Deleting `data/dashboard.db` (section 10) also forgets the Settings page's changes.
+
+**In `config.json`:** every setting can also be written there (the app's
+defaults are in `config.example.json`):
 
 | Setting | What it does |
 |---|---|
@@ -840,7 +869,6 @@ to leave.
 | `libraryFull.targetPercent` | How far down to bring the Library when that happens (70% — change it if you prefer) |
 | `server.port` | The dashboard's address: `http://localhost:7744`. Any number from 1024 to 65535 except 7743 (Vericopy's) |
 | `server.host` | `"127.0.0.1"`: only this Mac can open the dashboard (recommended). `"0.0.0.0"`: your phone on the same Wi-Fi too (section 4) |
-| `server.nightlyScan` | `false` (default): nothing scans until you press Scan now. `true`: also scan at 2 AM while `npm start` runs |
 | `ageDays.recent` / `ageDays.max` | The 14-day "still being worked on" window and the 120-day "fully old" point |
 | `weights` | The 0.45 / 0.35 / 0.20 mix. Must add up to 1 |
 | `buckets.review` | Unfinished projects scoring this or more (40) are Review instead of Keep |
@@ -871,8 +899,10 @@ commas, and there's **no comma after the last item**. If you break the file,
 the app tells you where.
 
 The dashboard re-reads `config.json` every time a page loads, so most changes
-show up when you refresh (scores after the next Scan now). `server` changes need
-a restart of `npm start`.
+show up when you refresh (scores after the next Scan now). `server.port` and
+`server.host` need a restart of `npm start`. Remember that a value saved on the
+Settings page wins over `config.json`: if an edit there seems to do nothing, the
+Settings page shows that setting as **Changed here**.
 
 ## 12. Checking the numbers against Finder
 
@@ -964,7 +994,7 @@ the answers — including the scoring rules, the file sorting rules, the move
 plan, a scan of a fake drive, the database (scanning twice creates no
 duplicates, missing projects are kept, a pinned project is never Ready, Library
 scans are kept apart, older databases upgrade without losing anything), the
-nightly schedule, the dashboard server (each route, Scan now's progress, unplugged
+the Settings page, the dashboard server (each route, Scan now's progress, unplugged
 drives, the localhost guards), Notion (your four real folder/page examples
 come out as top suggestions, a confirmed link survives rescans, a "No Notion
 page" folder isn't suggested, Notion being offline keeps the last statuses),
@@ -1064,8 +1094,6 @@ touch your real `data/dashboard.db`.
   start editing (your project file and renders will then be newer).
 - **The Archive's folders aren't scanned.** The dashboard knows how full it is,
   not what's on it.
-- **Nightly scans need `npm start` running** (and the Mac awake), and are off
-  unless you turn them on.
 - **Renaming a project folder** makes it look like a new project: the old name
   is marked missing and the new name starts fresh (pin it again if it was
   pinned, and link it to Notion again).
@@ -1089,6 +1117,7 @@ touch your real `data/dashboard.db`.
 ```
 config.example.json      default settings (copy to config.json)
 src/config.js            loads settings, runs safety checks
+src/settings.js          the Settings page: what it can change, checking values, config.json + saved changes
 src/cli/scan.js          the `npm run scan` command
 src/cli/report.js        the `npm run report` command
 src/cli/pin.js           the `npm run pin` command
@@ -1096,9 +1125,8 @@ src/cli/format.js        formats the printed reports
 src/server.js            the dashboard server (`npm start`): web addresses ("routes") and safety guards
 src/web/views.js         builds each answer the dashboard asks for (reads the database only)
 src/web/scanRunner.js    the Scan now button: one scan at a time, with progress
-src/db.js                the database: tables, saving scans, pins (writes only in data/)
-src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and the nightly job)
-src/jobs/nightly.js      the 2 AM nightly scan (only if server.nightlyScan is on)
+src/db.js                the database: tables, saving scans, pins, saved settings (writes only in data/)
+src/jobs/scanAndSave.js  one full scan + save (used by `npm run scan` and Scan now)
 src/scanner/scan.js      walks a drive (read-only) and collects facts
 src/scanner/classify.js  decides raw / proxy / export / cache / project / other, and final exports
 src/scanner/parseName.js pulls dates out of folder names ("Soccer 8-24")
@@ -1110,6 +1138,7 @@ src/notion/match.js      suggests which Notion page belongs to which folder
 src/offload/             Phase 5 (a stub)
 public/                  the dashboard pages: index.html (Overview), project.html, library.html (Done HDD),
                          notion.html (Link to Notion),
+                         settings.html (Settings),
                          styles.css, and js/ (the code that runs in your browser)
 tests/                   automated tests
 data/                    the only folder the app writes to: dashboard.db (not uploaded to GitHub)
@@ -1170,13 +1199,11 @@ data/                    the only folder the app writes to: dashboard.db (not up
   time, plus a "cursor" saying where the next 100 start.
 - **Fuzzy matching** — comparing names that are similar but not identical. The
   Link to Notion page uses it to suggest pages (section 5).
-- **Cron expression** — five fields that describe a repeating time:
-  minute, hour, day of month, month, day of week. `0 2 * * *` = 2:00 AM daily.
 
 ## Roadmap
 
 1. ✅ Scanner, file classifier, scoring, `npm run scan`, three-drive config, drive space and move plan
-2. ✅ Database (SQLite), `npm run report`, `npm run pin`, the nightly scan job
+2. ✅ Database (SQLite), `npm run report`, `npm run pin`
 3. ✅ Dashboard (`npm start`): Overview, project pages, the Done HDD page with the
    Library → Archive list (Move 2); Library scans saved
 4. ✅ Notion: read your Projects board, link folders to pages (suggested, you confirm),

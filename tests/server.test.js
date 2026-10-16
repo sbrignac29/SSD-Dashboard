@@ -151,7 +151,6 @@ describe('starting the server', () => {
       assert.deepEqual([scan.running, scan.outcome], [false, null]);
       const { body: summary } = await server.call('/api/summary');
       assert.equal(summary.hasScan, false);
-      assert.equal(summary.nightlyScan, false, 'the nightly scan is off unless turned on in config.json');
       await new Promise((resolve) => setTimeout(resolve, 200));
       assert.equal(server.db.prepare('SELECT COUNT(*) AS n FROM scans').get().n, 0, 'still no scan');
     } finally {
@@ -515,27 +514,20 @@ describe('Notion', () => {
     }
   });
 
-  it('Scan now also refreshes Notion; the nightly scan never does', async () => {
+  it('Scan now also refreshes Notion; loading the pages never does', async () => {
     const { client, board } = fakeNotion({ pages: ownersBoard() });
     const server = await startServer({ config: configFor({ notionToken: 'test-token' }), notion: client });
     try {
+      // Starting the server and opening every page reads nothing from Notion.
+      for (const route of ['/', '/notion.html', '/api/notion', '/api/notion/links', '/api/projects', '/api/summary']) {
+        await server.call(route);
+      }
+      assert.equal(board.calls.length, 0, 'no background sync');
+
       const { final } = await server.scanNow();
       assert.equal(final.notion.state, 'synced');
       assert.match(final.message, /Notion: Read 10 pages/);
-      const reads = board.calls.length;
-      assert.ok(reads > 0);
-
-      // The nightly job goes through the same runner, with trigger 'nightly'.
-      const runner = createScanRunner({
-        db: server.db,
-        getConfig: () => configFor({ notionToken: 'test-token' }),
-        notion: createNotionSyncer({ db: server.db, getConfig: () => configFor({ notionToken: 'test-token' }), makeClient: () => client }),
-        log: { error() {} },
-      });
-      const nightly = await runner.start({ trigger: 'nightly' });
-      const done = await nightly.done;
-      assert.equal(done.notion.state, 'skipped');
-      assert.equal(board.calls.length, reads, 'the nightly scan sent nothing to Notion');
+      assert.ok(board.calls.length > 0);
     } finally {
       await server.stop();
     }

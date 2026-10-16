@@ -420,13 +420,14 @@ describe('the End date hint', () => {
   });
 });
 
-describe('upgrading the database for Phase 4', () => {
-  it('a version-3 database (Phase 3) gets the Notion tables and columns, keeping every row', () => {
-    const fileName = path.join(base, 'from-version-3.db');
+describe('upgrading the database for Phase 4 (migration 5)', () => {
+  it('a version-4 database (Phase 3 + the Settings page) gets the Notion tables and columns, keeping every row', () => {
+    const fileName = path.join(base, 'from-version-4.db');
     const Database = require('better-sqlite3');
     const old = new Database(fileName);
-    for (const step of MIGRATIONS.slice(0, 3)) old.exec(step);
-    old.pragma('user_version = 3');
+    for (const step of MIGRATIONS.slice(0, 4)) old.exec(step);
+    old.pragma('user_version = 4');
+    old.prepare('UPDATE settings SET overrides = ? WHERE id = 1').run('{"buckets.review":45}');
     old
       .prepare(
         `INSERT INTO projects (id, drive, path, name, kind, size_bytes, raw_bytes, proxy_bytes, export_bytes, cache_bytes,
@@ -442,6 +443,7 @@ describe('upgrading the database for Phase 4', () => {
     const row = db.prepare('SELECT * FROM projects WHERE id = 5').get();
     assert.deepEqual([row.pinned_keep, row.link_source, row.notion_page_id, row.notion_status], [1, null, null, null]);
     assert.deepEqual(db.prepare('SELECT COUNT(*) AS n FROM notion_pages').get(), { n: 0 });
+    assert.equal(db.prepare('SELECT overrides FROM settings WHERE id = 1').get().overrides, '{"buckets.review":45}', 'Settings page changes kept');
     // The rules hold: a "confirmed" link needs a real synced page.
     assert.throws(() => db.prepare("UPDATE projects SET link_source = 'confirmed' WHERE id = 5").run(), /CHECK constraint/);
     assert.throws(

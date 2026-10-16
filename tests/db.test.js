@@ -67,7 +67,7 @@ function testConfig(folders = {}) {
   });
 }
 
-// One full scan + save, as `npm run scan` and the nightly job do it.
+// One full scan + save, as `npm run scan` does it.
 function save(now = NOW, config = testConfig()) {
   return scanAndSave({ config, db, now });
 }

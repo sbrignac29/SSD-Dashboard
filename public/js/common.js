@@ -16,11 +16,12 @@ const Dashboard = (() => {
   // sends JSON (the server refuses POSTs that don't, see server.js).
   //   body  – what to send with a POST, e.g. { projectIds: [12], action: 'none' }
   //   allow – HTTP statuses that aren't errors for this call, e.g. [409]
-  async function api(path, { method = 'GET', body = {}, allow = [] } = {}) {
+  //   body  – what a POST sends (turned into JSON text); {} if left out
+  async function api(path, { method = 'GET', allow = [], body: sent = {} } = {}) {
     const options = { method, headers: { Accept: 'application/json' } };
     if (method !== 'GET') {
       options.headers['Content-Type'] = 'application/json';
-      options.body = JSON.stringify(body);
+      options.body = JSON.stringify(sent);
     }
     let response;
     try {

@@ -122,9 +122,6 @@ function validateConfig(config) {
   if (typeof server.host !== 'string' || server.host.trim() === '') {
     problems.push('"server.host" must be "127.0.0.1" (this Mac only) or "0.0.0.0" (also your phone, on the same Wi-Fi).');
   }
-  if (typeof server.nightlyScan !== 'boolean') {
-    problems.push('"server.nightlyScan" must be true or false (no quotes).');
-  }
 
   const weights = config.weights || {};
   const weightNames = ['done', 'age', 'size'];

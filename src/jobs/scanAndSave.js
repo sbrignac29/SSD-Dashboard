@@ -1,8 +1,7 @@
 'use strict';
 
-// One full scan of a drive, saved to the database. `npm run scan`, the
-// nightly job (nightly.js) and the dashboard's Scan now button all use this,
-// so they always behave the same way.
+// One full scan of a drive, saved to the database. `npm run scan` and the
+// dashboard's Scan now button both use this, so they always behave the same way.
 //
 // The scan itself only READS the drive (src/scanner/scan.js); the only writing
 // is to the database in data/ (src/db.js).

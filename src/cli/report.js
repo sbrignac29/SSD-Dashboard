@@ -2,7 +2,7 @@
 'use strict';
 
 // The `npm run report` command: prints the results saved by the last
-// `npm run scan` (or nightly scan), straight from the database. It doesn't
+// `npm run scan` (or Scan now), straight from the database. It doesn't
 // scan anything, so it's instant and works even when the SSD isn't plugged in.
 // The only thing it asks the drives is how full they are (read-only), for the
 // move plan; unplugged drives show as "not connected".
@@ -10,7 +10,9 @@
 // The database is opened read-only: this command can't change anything.
 
 const { parseArgs } = require('node:util');
-const { loadConfig, ConfigError } = require('../config');
+const { ConfigError } = require('../config');
+// config.json + the changes saved on the dashboard's Settings page.
+const { loadAppConfig } = require('../settings');
 const { allDriveSpace } = require('../scanner/space');
 const { byOffloadOrder } = require('../scoring/score');
 const { planMoves } = require('../scoring/plan');
@@ -36,7 +38,7 @@ async function main(argv) {
     return;
   }
 
-  const { config } = loadConfig();
+  const { config } = loadAppConfig();
   const db = openDatabase({ readonly: true });
   let saved;
   try {

@@ -331,7 +331,6 @@ function summaryView({ db, config, spaces }) {
       limitPercent: config.libraryFull.startAtPercent,
     },
     shared: { count: shared.length, bytes: sum(shared, (p) => p.sizeBytes), names: shared.map((p) => p.name) },
-    nightlyScan: config.server.nightlyScan,
   };
 }
 
@@ -522,7 +521,7 @@ function readyChecks(project, scoring, context) {
   );
 
   const pins = pinSources(project, config);
-  const sources = [pins.database && 'the Pin button / npm run pin', pins.config && 'folders.keepPinned in config.json'].filter(Boolean);
+  const sources = [pins.database && 'the Pin button / npm run pin', pins.config && 'your settings (Always keep on the SSD)'].filter(Boolean);
   checks.push({
     id: 'pinned',
     label: 'Not pinned to the SSD',
@@ -644,7 +643,7 @@ function projectDetailView({ db, config, id }) {
   if (project.missing || !project.scoring) return result;
 
   // Work the score out again from the saved facts, the same way the last scan
-  // (or pin) did, to show each part. If it comes out different, config.json
+  // (or pin) did, to show each part. If it comes out different, the settings
   // was edited since; the saved score is what the rest of the page shows.
   const others = presentProjects(db, 'working');
   const largest = others.reduce((big, p) => (p.sizeBytes > big.sizeBytes ? p : big), project);
@@ -679,11 +678,12 @@ function pinResultView(outcome) {
   const messages = {
     pinned: `Pinned ${name}: it stays on the SSD.`,
     unpinned: outcome.stillPinnedByConfig
-      ? `Removed your pin, but config.json also pins ${name} (folders.keepPinned), so it stays. Remove it there to unpin it.`
+      ? `Removed your pin, but your settings also pin ${name} (“Always keep on the SSD”), so it stays. ` +
+        'Remove it from that list on the Settings page (or in config.json) to unpin it.'
       : `Unpinned ${name}.`,
     'pinned-in-config':
-      `${name} is pinned in config.json (folders.keepPinned). The app never edits that file: ` +
-      'remove the name there, then press Scan now, to unpin it.',
+      `${name} is pinned in your settings (“Always keep on the SSD”, folders.keepPinned). ` +
+      'To unpin it, remove it from that list on the Settings page (it updates right away), or in config.json.',
     shared: `${name} is a shared folder: shared folders are never ranked, so there's nothing to pin.`,
     'not-on-working': 'Pins are for Working SSD projects.',
     'not-found': "There's no project with that id.",

@@ -187,7 +187,21 @@ const MIGRATIONS = [
   ALTER TABLE scans ADD COLUMN drive_free_bytes INTEGER;   -- ... and its free space
   `,
 
-  // 4 — Phase 4, Notion:
+  // 4 — the dashboard's Settings page. Exactly one row (id 1), so saving is
+  // always an UPDATE, never a delete. `overrides` holds only what you changed
+  // on the page, as JSON keyed by setting name, e.g.
+  //   {"drives.working": "/Volumes/NEWSSD", "weights": {"done": 0.5, "age": 0.3, "size": 0.2}}
+  // Those win over config.json; everything else still comes from the files.
+  `
+  CREATE TABLE settings (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    overrides  TEXT NOT NULL DEFAULT '{}',  -- JSON: setting name -> value
+    updated_at TEXT                          -- when the Settings page last saved (empty: never)
+  );
+  INSERT INTO settings (id) VALUES (1);
+  `,
+
+  // 5 — Phase 4, Notion:
   //   - notion_pages: a copy of the pages in your Notion Projects database,
   //     refreshed by each sync, so the dashboard still knows them (and their
   //     statuses) when Notion can't be reached. Rows are never deleted: a page
@@ -313,7 +327,10 @@ function migrate(db, { readonly }) {
   }
   if (version === MIGRATIONS.length) return;
   if (readonly) {
-    throw new DatabaseError('The database needs a quick upgrade for this version of the app. Run `npm run scan` once.');
+    const error = new DatabaseError('The database needs a quick upgrade for this version of the app. Run `npm run scan` once.');
+    // Lets loadAppConfig() tell "older file, so no saved settings yet" apart from real problems.
+    error.outdated = true;
+    throw error;
   }
   for (let step = version; step < MIGRATIONS.length; step += 1) {
     // A transaction: the step either fully happens or not at all.
@@ -668,7 +685,7 @@ function saveScan(db, scan, config, { finishedAt = Date.now(), space = null } = 
   });
 
   // .immediate() claims the right to write at the start. If another program
-  // is writing (the nightly scan, or DB Browser with unsaved edits), SQLite
+  // is writing (the Scan now button, or DB Browser with unsaved edits), SQLite
   // then waits up to 5 seconds for it, instead of failing straight away.
   return { ...save.immediate(), ...counts };
 }
@@ -710,6 +727,37 @@ function rescoreProjects(db, config, now = latestScanTime(db)) {
     }
   })();
   return scored;
+}
+
+// --- Settings saved on the dashboard's Settings page --------------------------
+
+// What the Settings page saved: { overrides: { name: value }, updatedMs }.
+// (src/settings.js decides what the names mean and checks the values.)
+function readSavedSettings(db) {
+  const row = db.prepare('SELECT overrides, updated_at FROM settings WHERE id = 1').get();
+  let overrides;
+  try {
+    overrides = JSON.parse(row?.overrides ?? '{}');
+  } catch {
+    throw new DatabaseError(
+      `The settings saved in ${displayPath()} aren't readable (was the settings table edited by hand?). ` +
+        "Open DB Browser, set the settings row's overrides back to {} and write the change.",
+    );
+  }
+  const isObject = overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides);
+  return { overrides: isObject ? overrides : {}, updatedMs: fromIso(row?.updated_at ?? null) };
+}
+
+// Saves the Settings page's overrides and re-scores every Working SSD project
+// with the new settings (`config`), in one transaction: either both happen or
+// neither. Returns the re-scored projects.
+function writeSavedSettings(db, overrides, config, { now = Date.now() } = {}) {
+  return db
+    .transaction(() => {
+      db.prepare('UPDATE settings SET overrides = ?, updated_at = ? WHERE id = 1').run(JSON.stringify(overrides), toIso(now));
+      return rescoreProjects(db, config);
+    })
+    .immediate(); // claim the write first (see saveScan)
 }
 
 // --- Reading -----------------------------------------------------------------
@@ -1047,6 +1095,8 @@ module.exports = {
   togglePin,
   togglePinById,
   pinnedPathKeys,
+  readSavedSettings,
+  writeSavedSettings,
   saveNotionSync,
   recordFailedNotionSync,
   latestNotionSync,
