@@ -1,6 +1,6 @@
 'use strict';
 
-// Shared by the four pages: talking to the server, formatting numbers and
+// Shared by the pages: talking to the server, formatting numbers and
 // dates, the Notion status line, the theme button, the size chart and the
 // folder tree.
 //
@@ -117,9 +117,55 @@ const Dashboard = (() => {
     return `${notion.detail ?? ''}${saved}`;
   }
 
+  // --- Moves (Phase 5) --------------------------------------------------------
+
+  // "about 7 min left", from VeriCopy's estimate (null while it warms up).
+  function formatTimeLeft(seconds) {
+    if (seconds === null || seconds === undefined) return 'working out the time left…';
+    if (seconds < 60) return 'less than a minute left';
+    if (seconds < 3600) return `about ${Math.round(seconds / 60)} min left`;
+    const hours = Math.floor(seconds / 3600);
+    return `about ${hours} h ${Math.round((seconds % 3600) / 60)} min left`;
+  }
+
+  function formatProgress(percent) {
+    return percent === null || percent === undefined ? '—' : `${Math.floor(percent)}%`;
+  }
+
+  // The marks in front of each pre-check.
+  const CHECK_MARKS = { pass: '✓', fail: '✗', warn: '!', info: 'i', na: '–' };
+  const CHECK_WORDS = { pass: 'OK', fail: 'Problem', warn: 'Warning', info: 'Note', na: "Doesn't apply" };
+
+  // Asks `load` again and again: every 2 seconds while `isActive()` says a
+  // move is running, every 10 seconds otherwise (to notice a move started on
+  // another page). This is "polling": the page asks the dashboard's server,
+  // which asks VeriCopy (the page never talks to VeriCopy itself).
+  // Returns a function that stops it.
+  function poll(load, isActive) {
+    let timer = null;
+    let stopped = false;
+    async function round() {
+      try {
+        await load();
+      } catch {
+        // The page shows its own error; keep trying.
+      }
+      if (!stopped) timer = setTimeout(round, isActive() ? 2000 : 10000);
+    }
+    timer = setTimeout(round, isActive() ? 2000 : 10000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }
+
   // The helpers every page's Alpine component gets, so the HTML can call them
   // (e.g. x-text="formatBytes(p.sizeBytes)").
   const helpers = {
+    formatTimeLeft,
+    formatProgress,
+    CHECK_MARKS,
+    CHECK_WORDS,
     formatBytes,
     formatPercent,
     formatCount,
@@ -345,5 +391,5 @@ const Dashboard = (() => {
     container.append(build(tree.folders, tree.otherBytes, 'Files directly in the project folder'));
   }
 
-  return { api, helpers, ...helpers, renderSizeChart, sizeRows, renderFolderTree, onThemeChange, cycleTheme };
+  return { api, helpers, ...helpers, poll, renderSizeChart, sizeRows, renderFolderTree, onThemeChange, cycleTheme };
 })();

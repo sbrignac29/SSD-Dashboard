@@ -250,6 +250,78 @@ const MIGRATIONS = [
     (link_source = 'none' AND notion_page_id IS NULL)
   );
   `,
+
+  // 6 — Phase 5, moves through VeriCopy: archive_log becomes the full record
+  // of every move, one row per move, written the moment you press Start and
+  // updated as VeriCopy reports progress. VeriCopy forgets its jobs when it
+  // quits, so this table is the durable history.
+  // The old table (from step 1) had no room for that and was never written
+  // to, but any rows in it are copied over (state 'lost', no details), the
+  // same rebuild as step 3: new table, copy, drop, rename.
+  //   state – the dashboard's verdict:
+  //     starting      the row is saved, VeriCopy is being asked (POST /api/jobs)
+  //     refused       VeriCopy said no (e.g. destination_exists); nothing copied
+  //     queued | copying | verifying   VeriCopy's own status, while it works
+  //     checking      VeriCopy said verified; the dashboard's spot check is running
+  //     copied        verified AND the spot check passed: the ONLY success
+  //     check_failed  verified, but the copy didn't match the original's count/bytes
+  //     failed | cancelled   VeriCopy's status (partial folder left behind)
+  //     unverified    VeriCopy said copied_unverified (never for API jobs)
+  //     lost          VeriCopy no longer knows the job (quit / restarted)
+  // The CHECK rule at the end makes "copied" impossible to save unless
+  // VeriCopy said verified and the spot check passed.
+  `
+  CREATE TABLE archive_log_v6 (
+    id                 INTEGER PRIMARY KEY,
+    project_id         INTEGER NOT NULL REFERENCES projects (id),  -- the row moved (Working SSD row for Move 1, Library row for Move 2)
+    project_path       TEXT    NOT NULL,  -- path from the drive top, at the time, e.g. 'NCHS Football/Week 1'
+    project_name       TEXT    NOT NULL,
+    from_drive         TEXT    NOT NULL CHECK (from_drive IN ('working', 'library')),
+    to_drive           TEXT    NOT NULL CHECK (to_drive IN ('library', 'archive')),
+    source_path        TEXT    NOT NULL,  -- full path of the original folder
+    destination_parent TEXT    NOT NULL,  -- the folder sent to VeriCopy as "destination"
+    destination_path   TEXT    NOT NULL,  -- where the copy lands: destination_parent/<folder name>
+    vericopy_url       TEXT    NOT NULL,  -- which VeriCopy was asked
+    job_id             TEXT    UNIQUE,    -- VeriCopy's job id (empty until it accepted the copy)
+    size_bytes         INTEGER,           -- the original, measured just before starting
+    file_count         INTEGER,
+    state              TEXT    NOT NULL CHECK (state IN ('starting', 'refused', 'queued', 'copying', 'verifying', 'checking',
+                                                         'copied', 'check_failed', 'failed', 'cancelled', 'unverified', 'lost')),
+    vericopy_status    TEXT,              -- the last status VeriCopy reported
+    status_history     TEXT    NOT NULL DEFAULT '[]',  -- JSON: [{ at, state, vericopyStatus, note }]
+    progress           REAL,              -- VeriCopy's 0–1 figure (copy + verify)
+    bytes_copied       INTEGER,
+    bytes_total        INTEGER,
+    files_total        INTEGER,
+    files_copied       INTEGER,
+    files_verified     INTEGER,
+    files_failed       INTEGER,
+    seconds_remaining  INTEGER,
+    failed_files       TEXT    NOT NULL DEFAULT '[]',  -- JSON: [{ path, message }] from VeriCopy
+    fatal_error        TEXT,              -- VeriCopy's reason a job couldn't start
+    spot_check         TEXT,              -- JSON: the dashboard's own count of both folders
+    spot_check_ok      INTEGER CHECK (spot_check_ok IN (0, 1)),
+    error              TEXT,              -- what went wrong, in plain words
+    created_at         TEXT    NOT NULL,  -- when you pressed Start
+    submitted_at       TEXT,              -- when VeriCopy accepted it
+    updated_at         TEXT    NOT NULL,
+    finished_at        TEXT,              -- when it reached a final state
+    CHECK ((from_drive = 'working' AND to_drive = 'library') OR (from_drive = 'library' AND to_drive = 'archive')),
+    -- (IS, not =: with =, an empty value would make the rule "unknown", which SQLite lets through.)
+    CHECK (state <> 'copied' OR (vericopy_status IS 'verified' AND spot_check_ok IS 1))
+  );
+  INSERT INTO archive_log_v6 (id, project_id, project_path, project_name, from_drive, to_drive, source_path,
+                              destination_parent, destination_path, vericopy_url, size_bytes, state, error,
+                              created_at, updated_at, finished_at)
+    SELECT id, project_id, project_path, project_path,
+           CASE destination_drive WHEN 'library' THEN 'working' ELSE 'library' END, destination_drive,
+           project_path, '', '', '', size_bytes, 'lost', 'Recorded before moves were built: no details.',
+           archived_at, archived_at, archived_at
+    FROM archive_log;
+  DROP TABLE archive_log;
+  ALTER TABLE archive_log_v6 RENAME TO archive_log;
+  CREATE INDEX archive_log_by_project ON archive_log (project_id);
+  `,
 ];
 
 // The drives whose folders can be saved: the Working SSD (scored for Move 1)
@@ -1077,6 +1149,165 @@ function setNotionLinks(db, config, { projectIds, action, pageId = null, now = D
   return { result: 'ok', projects: scored.filter((p) => ids.has(p.id)) };
 }
 
+// --- Moves (Phase 5): archive_log --------------------------------------------
+//
+// One row per move (see migration 6). The dashboard writes these rows only;
+// the copying itself is VeriCopy's.
+
+// Moves still in progress: the tracker (offload/moves.js) keeps asking VeriCopy about these.
+const UNFINISHED_MOVE_STATES = ['starting', 'queued', 'copying', 'verifying', 'checking'];
+
+function parseJsonList(text) {
+  try {
+    const list = JSON.parse(text ?? '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function rowToMove(row) {
+  let spotCheck = null;
+  try {
+    spotCheck = row.spot_check ? JSON.parse(row.spot_check) : null;
+  } catch {
+    spotCheck = null;
+  }
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    projectPath: row.project_path,
+    projectName: row.project_name,
+    fromDrive: row.from_drive,
+    toDrive: row.to_drive,
+    sourcePath: row.source_path,
+    destinationParent: row.destination_parent,
+    destinationPath: row.destination_path,
+    vericopyUrl: row.vericopy_url,
+    jobId: row.job_id,
+    sizeBytes: row.size_bytes,
+    fileCount: row.file_count,
+    state: row.state,
+    vericopyStatus: row.vericopy_status,
+    history: parseJsonList(row.status_history),
+    progress: row.progress,
+    bytesCopied: row.bytes_copied,
+    bytesTotal: row.bytes_total,
+    filesTotal: row.files_total,
+    filesCopied: row.files_copied,
+    filesVerified: row.files_verified,
+    filesFailed: row.files_failed,
+    secondsRemaining: row.seconds_remaining,
+    failedFiles: parseJsonList(row.failed_files),
+    fatalError: row.fatal_error,
+    spotCheck,
+    spotCheckOk: row.spot_check_ok === null ? null : row.spot_check_ok === 1,
+    error: row.error,
+    createdMs: fromIso(row.created_at),
+    submittedMs: fromIso(row.submitted_at),
+    updatedMs: fromIso(row.updated_at),
+    finishedMs: fromIso(row.finished_at),
+    unfinished: UNFINISHED_MOVE_STATES.includes(row.state),
+  };
+}
+
+// Saves a new move the moment you press Start, before VeriCopy is asked, so
+// even a crash right after leaves a record. Returns the move.
+//   move: { projectId, projectPath, projectName, fromDrive, toDrive, sourcePath,
+//           destinationParent, destinationPath, vericopyUrl, sizeBytes, fileCount }
+function createMove(db, move, { now = Date.now() } = {}) {
+  const at = toIso(now);
+  const history = JSON.stringify([{ at, state: 'starting', vericopyStatus: null, note: 'Asked VeriCopy to start the copy' }]);
+  const id = db
+    .transaction(
+      () =>
+        db
+          .prepare(
+            `INSERT INTO archive_log (project_id, project_path, project_name, from_drive, to_drive, source_path,
+               destination_parent, destination_path, vericopy_url, size_bytes, file_count, state, status_history,
+               created_at, updated_at)
+             VALUES (@projectId, @projectPath, @projectName, @fromDrive, @toDrive, @sourcePath,
+               @destinationParent, @destinationPath, @vericopyUrl, @sizeBytes, @fileCount, 'starting', @history, @at, @at)`,
+          )
+          .run({ ...move, history, at }).lastInsertRowid,
+    )
+    .immediate();
+  return getMove(db, Number(id));
+}
+
+// The columns updateMove may change, by their JavaScript names.
+const MOVE_COLUMNS = {
+  jobId: 'job_id',
+  state: 'state',
+  vericopyStatus: 'vericopy_status',
+  progress: 'progress',
+  bytesCopied: 'bytes_copied',
+  bytesTotal: 'bytes_total',
+  filesTotal: 'files_total',
+  filesCopied: 'files_copied',
+  filesVerified: 'files_verified',
+  filesFailed: 'files_failed',
+  secondsRemaining: 'seconds_remaining',
+  failedFiles: 'failed_files',
+  fatalError: 'fatal_error',
+  spotCheck: 'spot_check',
+  spotCheckOk: 'spot_check_ok',
+  error: 'error',
+  submittedMs: 'submitted_at',
+  finishedMs: 'finished_at',
+};
+
+// Changes one move. A new state or VeriCopy status is added to the move's
+// history (with `note`, if given). Returns the updated move, or undefined if
+// there's no such move.
+function updateMove(db, id, changes, { now = Date.now(), note = null } = {}) {
+  return db
+    .transaction(() => {
+      const row = db.prepare('SELECT * FROM archive_log WHERE id = ?').get(id);
+      if (!row) return undefined;
+      const values = { id, updated_at: toIso(now) };
+      for (const [key, value] of Object.entries(changes)) {
+        const column = MOVE_COLUMNS[key];
+        if (!column) throw new Error(`updateMove can't change "${key}"`);
+        if (key === 'failedFiles') values[column] = JSON.stringify(value ?? []);
+        else if (key === 'spotCheck') values[column] = value === null ? null : JSON.stringify(value);
+        else if (key === 'spotCheckOk') values[column] = value === null ? null : value ? 1 : 0;
+        else if (key === 'submittedMs' || key === 'finishedMs') values[column] = toIso(value);
+        else values[column] = value ?? null;
+      }
+      const newState = changes.state ?? row.state;
+      const newStatus = 'vericopyStatus' in changes ? changes.vericopyStatus : row.vericopy_status;
+      if (newState !== row.state || newStatus !== row.vericopy_status || note) {
+        const history = parseJsonList(row.status_history);
+        history.push({ at: values.updated_at, state: newState, vericopyStatus: newStatus ?? null, note });
+        values.status_history = JSON.stringify(history);
+      }
+      const columns = Object.keys(values).filter((c) => c !== 'id');
+      db.prepare(`UPDATE archive_log SET ${columns.map((c) => `${c} = @${c}`).join(', ')} WHERE id = @id`).run(values);
+      return rowToMove(db.prepare('SELECT * FROM archive_log WHERE id = ?').get(id));
+    })
+    .immediate();
+}
+
+function getMove(db, id) {
+  const row = db.prepare('SELECT * FROM archive_log WHERE id = ?').get(id);
+  return row ? rowToMove(row) : undefined;
+}
+
+// Moves, newest first: all of them (up to `limit`), or one project's.
+function listMoves(db, { limit = 50, projectId = null } = {}) {
+  const rows =
+    projectId === null
+      ? db.prepare('SELECT * FROM archive_log ORDER BY id DESC LIMIT ?').all(limit)
+      : db.prepare('SELECT * FROM archive_log WHERE project_id = ? ORDER BY id DESC LIMIT ?').all(projectId, limit);
+  return rows.map(rowToMove);
+}
+
+function unfinishedMoves(db) {
+  const marks = UNFINISHED_MOVE_STATES.map(() => '?').join(', ');
+  return db.prepare(`SELECT * FROM archive_log WHERE state IN (${marks}) ORDER BY id`).all(...UNFINISHED_MOVE_STATES).map(rowToMove);
+}
+
 module.exports = {
   DEFAULT_DB_PATH,
   DatabaseError,
@@ -1104,6 +1335,12 @@ module.exports = {
   getNotionPage,
   notionLinkCounts,
   setNotionLinks,
+  createMove,
+  updateMove,
+  getMove,
+  listMoves,
+  unfinishedMoves,
+  UNFINISHED_MOVE_STATES,
   MIGRATIONS,
   SAVED_DRIVES,
 };

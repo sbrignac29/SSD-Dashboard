@@ -52,9 +52,31 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-// Vericopy (the copy-and-verify app) runs at http://localhost:7743, so the
-// dashboard must use a different port.
-const VERICOPY_PORT = 7743;
+// VeriCopy (the owner's copy-and-verify Mac app) answers at this address
+// while it's open (Phase 5: moves). Its own API.md says to write 127.0.0.1,
+// never "localhost": localhost can resolve to the IPv6 address ::1, where
+// VeriCopy isn't listening.
+const DEFAULT_VERICOPY_URL = 'http://127.0.0.1:8787';
+
+// SAFETY: the dashboard may only ever talk to VeriCopy on this Mac. Returns
+// { origin, port } for a valid "http://127.0.0.1:<port>" address, or null.
+// Anything else (another computer, https, localhost, a path, a password in
+// the address) is refused, so a settings typo can't send requests elsewhere.
+function vericopyAddress(text) {
+  if (typeof text !== 'string') return null;
+  let url;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    return null;
+  }
+  const port = Number(url.port);
+  const plain = url.username === '' && url.password === '' && url.search === '' && url.hash === '' && url.pathname === '/';
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !plain || !Number.isInteger(port) || port < 1 || url.port === '') {
+    return null;
+  }
+  return { origin: `http://127.0.0.1:${port}`, port };
+}
 
 // The three drives in the workflow, in the order projects travel:
 //   working (2TB SSD: cards land here, editing happens here)
@@ -112,12 +134,19 @@ function validateConfig(config) {
     problems.push('"libraryFull.targetPercent" must be a percentage smaller than "startAtPercent", e.g. 70.');
   }
 
-  // The dashboard server (npm start). Vericopy already uses 7743.
+  // The dashboard server (npm start). It must not take VeriCopy's port.
   const server = config.server || {};
+  const vericopy = vericopyAddress(config.vericopy?.url);
+  if (!vericopy) {
+    problems.push(
+      `"vericopy.url" must be VeriCopy's address on this Mac: http://127.0.0.1 and a port, e.g. "${DEFAULT_VERICOPY_URL}" ` +
+        '(127.0.0.1, not localhost; no https, no other computer).',
+    );
+  }
   if (!Number.isInteger(server.port) || server.port < 1024 || server.port > 65535) {
     problems.push('"server.port" must be a whole number between 1024 and 65535, e.g. 7744.');
-  } else if (server.port === VERICOPY_PORT) {
-    problems.push(`"server.port" can't be ${VERICOPY_PORT}: Vericopy uses that port. Try 7744.`);
+  } else if (vericopy && server.port === vericopy.port) {
+    problems.push(`"server.port" can't be ${server.port}: VeriCopy uses that port ("vericopy.url"). Try 7744.`);
   }
   if (typeof server.host !== 'string' || server.host.trim() === '') {
     problems.push('"server.host" must be "127.0.0.1" (this Mac only) or "0.0.0.0" (also your phone, on the same Wi-Fi).');
@@ -319,4 +348,6 @@ module.exports = {
   assertSafeLocations,
   notionId,
   notionSettings,
+  vericopyAddress,
+  DEFAULT_VERICOPY_URL,
 };

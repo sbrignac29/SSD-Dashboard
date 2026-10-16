@@ -174,6 +174,22 @@ const SECTIONS = [
     ],
   },
   {
+    id: 'vericopy',
+    title: 'VeriCopy (moves)',
+    intro: 'The app that copies and checksum-verifies your moves. The dashboard asks it to copy; it never copies or deletes anything itself.',
+    fields: [
+      {
+        key: 'vericopy.url',
+        label: 'VeriCopy’s address',
+        type: 'text',
+        effect: 'now',
+        help:
+          'Normally http://127.0.0.1:8787 (VeriCopy ▸ Settings ▸ API shows the port). It must be http://127.0.0.1 and a port: ' +
+          'the dashboard only ever talks to VeriCopy on this Mac.',
+      },
+    ],
+  },
+  {
     id: 'fileTypes',
     title: 'File types (advanced)',
     intro:
